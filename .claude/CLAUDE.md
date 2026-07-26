@@ -3,7 +3,7 @@
 ## Mission
 Build **Agentic Data Platform**: a data-middle-platform-backed personal knowledge Agent.
 Do not build a simple chatbot. Build governed data services first, then Agents.
-做harness engineering来引导LLM，而不是限制LLM！
+
 
 ## Core Principle
 Enterprise Agents depend on data management: ingestion, assets, metadata, quality,

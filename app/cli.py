@@ -196,7 +196,7 @@ def cmd_scan():
 
 
 def cmd_ask(question: str):
-    """向系统提问（走 Orchestrator 自动路由）"""
+    """向系统提问（走 Orchestrator 自动路由，本地调用 - 无需启动服务器）"""
     if not question:
         print("❌ 请输入问题")
         print("   用法: python -m app.cli ask <你的问题>")
@@ -205,7 +205,10 @@ def cmd_ask(question: str):
     print(f"💬 Orchestrator 处理中: {question}")
     print()
 
-    result = _post("/agent/v2/chat", {"text": question})
+    from app.agent.graphs.orchestrator import run_orchestrator
+    import uuid
+    result = run_orchestrator(input_text=question, thread_id=f"ask_{uuid.uuid4().hex[:8]}")
+
     if result.get("success"):
         route = result.get("route", "?")
         print(f"  路由: {route} ({result.get('route_reason', '')})")
@@ -217,6 +220,12 @@ def cmd_ask(question: str):
             print(f"\n  (data: {result['result_data']})")
     else:
         print(f"❌ 失败: {result.get('error', '未知错误')}")
+
+
+def _cmd_ui():
+    """启动终端 UI"""
+    from app.webui import main as tui_main
+    tui_main()
 
 
 def cmd_status():
@@ -283,6 +292,134 @@ def cmd_memory(content: str):
     print(result.get("summary", f"❌ {result.get('error', '失败')}"))
 
 
+def cmd_eval():
+    """运行测试集，回归评测。
+
+    模式:
+      agent eval                        — golden regression（默认）
+      agent eval --tier golden          — golden 全部（regression + dataset）
+      agent eval --tier challenge       — challenge
+      agent eval --tier exploratory     — exploratory
+      agent eval --tier candidate       — candidate
+      agent eval --all                  — 所有层级合并
+    """
+    from app.agent.trace import load_test_cases, run_benchmark_suite
+
+    flags = set(sys.argv[2:])
+    use_llm = "--llm" in flags
+
+    if "--all" in flags:
+        tier = "all"
+        label = "所有层级"
+    elif "--tier" in flags:
+        try:
+            idx = sys.argv.index("--tier")
+            tier = sys.argv[idx + 1]
+        except (ValueError, IndexError):
+            tier = "regression"
+        label_map = {
+            "regression": "Golden Regression",
+            "golden": "Golden",
+            "challenge": "Challenge",
+            "exploratory": "Exploratory",
+            "candidate": "Candidate",
+            "all": "所有层级",
+        }
+        label = label_map.get(tier, tier)
+    else:
+        tier = "regression"
+        label = "Golden Regression"
+
+    cases = load_test_cases(tier=tier)
+    print(f"📋 加载了 {len(cases)} 个测试用例 ({label})\n")
+    for i, c in enumerate(cases, 1):
+        route_hint = c.get("expected_route", "?")
+        s = c.get("stage", tier)
+        print(f"  {i}. [{route_hint}] [{s}] {c['input'][:50]}")
+
+    print(f"\n🚀 开始评测...\n")
+    report = run_benchmark_suite(test_cases=cases)
+    total = report.get("total_cases", 0)
+    rate = report.get("pass_rate", 0)
+    avg_lat = report.get("avg_latency_ms", 0)
+
+    print(f"{'='*50}")
+    print(f"📊 评测结果 ({label})")
+    print(f"  ✅ 通过率: {rate}%")
+    print(f"  ⏱  平均延迟: {avg_lat}ms\n")
+
+    for r in report.get("results", []):
+        icon = "✅" if r.get("success") else "❌"
+        lat = r.get("latency_ms", 0)
+        case_obj = next((c for c in cases if c.get("intent") == r["intent"]), {})
+        expected = case_obj.get("expected_route")
+        note = case_obj.get("known_issue", "")
+        stage = case_obj.get("stage", "?")
+        route = r.get("route", "?")
+        print(f"  {icon} [{stage:10s}] {r['intent']:16s} ({lat}ms)", end="")
+        if expected:
+            rm = "✅" if route == expected else "⚠️"
+            print(f"  {rm} 路由: {route} (期望: {expected})")
+        else:
+            print(f"  · 路由: {route}")
+        if note and route != expected:
+            print(f"     🐛 {note[:80]}")
+
+    if use_llm:
+        print("\n🤖 调用 LLM Grader 深度评判...")
+        _grade_with_llm(cases, report)
+    print()
+
+
+def _grade_with_llm(cases: list[dict], report: dict) -> None:
+    """用 LLM 对评测结果做深度评判。"""
+    import json
+    import re
+    from app.agent.graphs.llm import get_chat_model
+
+    prompt = ["请逐条评判路由正确性 + 任务完成度。\n"]
+    for r in report.get("results", []):
+        c = next((c for c in cases if c.get("intent") == r["intent"]), {})
+        out = (r.get("final_output") or r.get("output_preview") or "")[:200]
+        prompt.append(f'Case: intent={r["intent"]} route={r["route"]} expected={c.get("expected_route","?")}')
+        prompt.append(f'  input: {r.get("input","")[:60]}')
+        prompt.append(f'  output: {out}')
+        prompt.append('')
+    prompt.append('Output JSON: {"pass":[intents],"warn":[{"intent":"","reason":""}],"fail":[],"score":0-100,"top3_fixes":[""]}')
+
+    try:
+        model = get_chat_model(temperature=0.1)
+        resp = model.invoke("\n".join(prompt))
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        if text.startswith("```"):
+            import re
+            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
+        data = json.loads(text)
+        print(f"\n  📊 LLM 评分: {data.get('score', '?')}/100")
+        print(f"  ✅ 通过: {len(data.get('pass',[]))} 条")
+        print(f"  ⚠️  告警: {len(data.get('warn',[]))} 条")
+        for w in data.get("warn", []):
+            print(f"    · {w.get('intent','')}: {w.get('reason','')[:100]}")
+        print(f"  Top 3 修复建议:")
+        for i, fix in enumerate(data.get("top3_fixes", []), 1):
+            print(f"    {i}. {fix[:120]}")
+    except Exception as e:
+        print(f"  ⚠️ LLM Grader 调用失败: {e}")
+
+        # 路由检查
+        route = r.get("route", "?")
+        case_obj = next((c for c in cases if c.get("intent") == r["intent"]), {})
+        expected = case_obj.get("expected_route")
+        if expected:
+            rm = "✅" if route == expected else "⚠️"
+            print(f"  {rm} 路由: {route} (期望: {expected})")
+        else:
+            print(f"  · 路由: {route}")
+
+    print()
+
+
+
 def print_help():
     print("""Agentic Data Platform — CLI
 
@@ -298,12 +435,22 @@ def print_help():
     ask <问题>           走 Orchestrator 自动路由
     reflect <内容>        反思分析
     memory <内容>         保存到长期记忆
+    eval [--tier golden|challenge|exploratory|candidate]  运行测试集（默认 golden regression）
+    eval --all                                            所有层级
+    eval --tier golden --llm                              带 LLM Grader
+    ui                   启动终端 UI
     status               系统状态
     help                 显示帮助
 """)
 
 
 def main():
+    # Windows GBK 终端兼容：用 sys.stdout 替换
+    if sys.stdout.encoding and sys.stdout.encoding.upper() in ("GBK", "GB2312", "CP936"):
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
     if len(sys.argv) < 2:
         print_help()
         return
@@ -319,12 +466,16 @@ def main():
         "ask": lambda: cmd_ask(" ".join(sys.argv[2:])),
         "reflect": lambda: cmd_reflect(" ".join(sys.argv[2:])),
         "memory": lambda: cmd_memory(" ".join(sys.argv[2:])),
+        "ui": lambda: _cmd_ui(),
+        "eval": cmd_eval,
         "status": cmd_status,
         "help": print_help,
     }
 
     if cmd in commands:
         commands[cmd]()
+    elif cmd in ("--help", "-h"):
+        print_help()
     else:
         print(f"未知命令: {cmd}")
         print_help()

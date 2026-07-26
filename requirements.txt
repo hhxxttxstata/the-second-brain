@@ -7,6 +7,9 @@ httpx>=0.28.0
 python-dotenv>=1.0.0
 structlog>=25.1.0
 
+# Terminal UI
+rich>=14.0.0
+
 # Testing
 pytest>=8.0.0
 pytest-cov>=6.0.0

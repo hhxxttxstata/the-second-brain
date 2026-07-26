@@ -63,12 +63,15 @@ SUGGEST_PROMPT = """Suggestions based on:
 
 def gather_context(state: ReflectState) -> ReflectState:
     """合并两层上下文。"""
+    logger.info("reflect.gather", step="📚 构建上下文...")
     ctx = build_context(task=state.get("content", "")[:100], max_tokens=2000)
     state["context"] = ctx["context"]
+    logger.info("reflect.gather.done", step=f"✅ 上下文已构建（{len(ctx['context'])} chars）")
     return state
 
 
 def analyze_node(state: ReflectState) -> ReflectState:
+    logger.info("reflect.analyze", step="🔍 LLM 分析中...")
     model = get_chat_model(temperature=0.5)
     prompt = ANALYZE_PROMPT.format(
         subject=state.get("subject", "general"), content=state.get("content", ""),
@@ -76,18 +79,22 @@ def analyze_node(state: ReflectState) -> ReflectState:
     )
     response = model.invoke(prompt)
     state["analysis"] = response.content if hasattr(response, "content") else str(response)
+    logger.info("reflect.analyze.done", step="✅ 分析完成")
     return state
 
 
 def critique_node(state: ReflectState) -> ReflectState:
+    logger.info("reflect.critique", step="💡 LLM 批判性审视中...")
     model = get_chat_model(temperature=0.6)
     prompt = CRITIQUE_PROMPT.format(content=state.get("content", ""), analysis=state.get("analysis", ""))
     response = model.invoke(prompt)
     state["critique"] = response.content if hasattr(response, "content") else str(response)
+    logger.info("reflect.critique.done", step="✅ 批判完成")
     return state
 
 
 def suggest_node(state: ReflectState) -> ReflectState:
+    logger.info("reflect.suggest", step="📌 LLM 生成建议和总结...")
     model = get_chat_model(temperature=0.4)
     prompt = SUGGEST_PROMPT.format(
         subject=state.get("subject", "general"), content=state.get("content", ""),
@@ -107,6 +114,7 @@ def suggest_node(state: ReflectState) -> ReflectState:
         state["summary"] = text[:500]
         state["suggestions"] = "(parse error)"
     state["success"] = True
+    logger.info("reflect.suggest.done", step="✅ 反思分析完成")
 
     # 写 trace + 记忆
     save_trace("reflect", {"subject": state.get("subject"), "summary": state.get("summary", "")[:200]})

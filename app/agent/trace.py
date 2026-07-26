@@ -187,18 +187,65 @@ class TraceSession:
 # Benchmark / 回归测试 — 对固定测试集跑分
 # ---------------------------------------------------------------------------
 
-def run_benchmark_suite() -> dict[str, Any]:
+def load_test_cases(tier: str | None = None,
+                     path: Path | str | None = None) -> list[dict[str, Any]]:
+    """从评测集读取测试用例。
+
+    Args:
+        tier: "regression" | "golden" | "challenge" | "exploratory" | "candidate" | "all"
+              默认 None = "regression"
+        path: 直接指定文件路径，覆盖 tier
+    """
+    eval_dir = _BENCHMARK_DIR.parent / "eval"
+
+    # 直接指定文件
+    if path is not None:
+        p = Path(path)
+        if p.exists():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    # 按 tier 搜索
+    if tier is None:
+        tier = "regression"
+
+    def _load_json_files(*globs: str) -> list[dict]:
+        cases = []
+        for g in globs:
+            for f in sorted(eval_dir.glob(g)):
+                try:
+                    cases.extend(json.loads(f.read_text(encoding="utf-8")))
+                except Exception:
+                    pass
+        return cases
+
+    TIER_MAP: dict[str, list[str]] = {
+        "regression": ["golden/regression.json"],
+        "golden": ["golden/*.json"],
+        "challenge": ["challenge/*.json"],
+        "exploratory": ["exploratory/*.json"],
+        "candidate": ["candidate/*.json"],
+        "all": ["golden/*.json", "challenge/*.json",
+                 "exploratory/*.json", "candidate/*.json"],
+    }
+
+    globs = TIER_MAP.get(tier)
+    if globs is None:
+        tier = "regression"
+        globs = TIER_MAP["regression"]
+
+    return _load_json_files(*globs)
+
+
+def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """运行固定测试集，输出回归评测报告。"""
     from app.agent.graphs.orchestrator import run_orchestrator
 
-    test_cases = [
-        {"intent": "自我认知", "input": "你是谁？你有什么能力？"},
-        {"intent": "档案查询", "input": "我的背景是什么？"},
-        {"intent": "日记检索", "input": "我最近写了什么日记？"},
-        {"intent": "知识搜索", "input": "帮我搜一下关于RAG的笔记"},
-        {"intent": "任务记忆", "input": "记住我的目标是秋招拿到AI应用开发offer"},
-        {"intent": "互联网搜索", "input": "帮我搜一下2025年AI应用开发秋招要求"},
-    ]
+    if test_cases is None:
+        test_cases = load_test_cases()
 
     results: list[dict[str, Any]] = []
     success_count = 0
@@ -229,6 +276,7 @@ def run_benchmark_suite() -> dict[str, Any]:
         results.append({
             "intent": case["intent"],
             "input": case["input"],
+            "route": r.get("route", "?"),
             "success": trace.success,
             "latency_ms": trace.latency_ms,
             "total_tokens": trace.total_tokens,

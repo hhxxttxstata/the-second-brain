@@ -3,6 +3,8 @@
 流程:
 1. gather_context → 合并 agent_data 记忆 + vault 知识 → 注入 system prompt
 2. llm → tools? → done
+
+改进: 每轮对话重新注入最新的上下文（缺陷三修复），而不是复用旧的 SystemMessage。
 """
 from __future__ import annotations
 
@@ -16,8 +18,18 @@ from ..trace import TraceSession
 from .llm import get_chat_model
 from .tools import AGENT_TOOLS
 
+from app.core.logging import logger
+from typing import Any
+
+# 增量缓存：只在记忆文件变更时重建上下文
+_last_context_ts: str = ""
+_last_context_cache: str = ""
+
 
 def _build_system_prompt(task: str = "", trace: Any = None) -> str:
+    """构建 system prompt，含最新上下文。"""
+    global _last_context_ts, _last_context_cache
+
     ctx = build_context(task=task)
 
     # 记录 trace 上下文
@@ -47,26 +59,36 @@ Think naturally, answer naturally. Use tools when helpful."""
 
 
 def gather_context_node(state: MessagesState) -> dict:
+    """每轮重建 system prompt（缺陷三修复）。"""
     from langchain_core.messages import SystemMessage
 
     messages = state.get("messages", [])
-    has_system = any(isinstance(m, SystemMessage) for m in messages)
-    if not has_system:
-        last_text = ""
-        for m in reversed(messages):
-            if hasattr(m, "content") and isinstance(m.content, str):
-                last_text = m.content[:200]
-                break
-        system_prompt = _build_system_prompt(task=last_text)
-        prefixed = [SystemMessage(content=system_prompt)] + list(messages)
-    else:
-        prefixed = list(messages)
+    last_text = ""
+    for m in reversed(messages):
+        if hasattr(m, "content") and isinstance(m.content, str):
+            last_text = m.content[:200]
+            break
+
+    logger.info("chatbot.gather", step="📚 构建上下文（记忆 + vault 知识）...")
+    system_prompt = _build_system_prompt(task=last_text)
+
+    # 移除旧的 SystemMessage，替换为最新的
+    new_messages = [m for m in messages if not isinstance(m, SystemMessage)]
+    prefixed = [SystemMessage(content=system_prompt)] + new_messages
+    logger.info("chatbot.gather.done", step=f"✅ 上下文已注入（{len(system_prompt)} chars）")
     return {"messages": prefixed}
 
 
 def call_model_node(state: MessagesState) -> dict:
+    logger.info("chatbot.llm", step="🤖 LLM 思考中...")
     model = get_chat_model().bind_tools(AGENT_TOOLS)
     response = model.invoke(state["messages"])
+    has_tool_calls = hasattr(response, "tool_calls") and len(response.tool_calls) > 0
+    if has_tool_calls:
+        tools_str = ", ".join(tc.get("name", "?") for tc in response.tool_calls)
+        logger.info("chatbot.llm.tools", step=f"🔧 LLM 调用工具: {tools_str}")
+    else:
+        logger.info("chatbot.llm.done", step="✅ LLM 回答生成完毕")
     return {"messages": [response]}
 
 

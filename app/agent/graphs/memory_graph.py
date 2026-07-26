@@ -15,6 +15,7 @@ from app.core.logging import logger
 from ..agent_data_service import (
     add_episodic,
     build_context,
+    is_profile_update,
     read_memory,
     save_trace,
     write_memory,
@@ -45,11 +46,12 @@ DECIDE_PROMPT = """Evaluate this input for memory-worthiness.
 ## Decision: "write" (worth remembering) | "skip" (trivial/chat)
 
 ## Output — JSON:
-{{"decision":"write|skip","reason":"why","type":"episodic|task","content_memory":"the key info to remember in 1-2 sentences"}}
+{{"decision":"write|skip","reason":"why","type":"episodic|task|profile","content_memory":"the key info to remember in 1-2 sentences"}}
 """
 
 
 def decide_node(state: MemoryAgentState) -> MemoryAgentState:
+    logger.info("memory.decide", step="🧠 判断是否值得记忆...")
     ctx = build_context(task=state.get("trigger_text", ""), max_tokens=1000)
     prompt = DECIDE_PROMPT.format(
         trigger_text=state.get("trigger_text", ""),
@@ -67,19 +69,43 @@ def decide_node(state: MemoryAgentState) -> MemoryAgentState:
         state["decision_reason"] = data.get("reason", "")
         state["target_type"] = data.get("type", "episodic")
         state["content"] = data.get("content_memory", state["trigger_text"])
+        if state["decision"] in ("write", "update"):
+            logger.info("memory.decide.yes",
+                        step=f"✅ 决定记忆 (type={state['target_type']})",
+                        reason=state["decision_reason"])
+        else:
+            logger.info("memory.decide.skip",
+                        step="⏭️ 跳过记忆",
+                        reason=state["decision_reason"])
     except Exception:
         state["decision"] = "skip"
+        logger.warning("memory.decide.error", step="⚠️ 解析失败，默认跳过")
     return state
 
 
 def write_node(state: MemoryAgentState) -> MemoryAgentState:
     if state.get("decision") not in ("write", "update"):
+        logger.info("memory.write.skip", step="⏭️ 无需写入")
         return {**state, "summary": "(skipped)", "success": True}
 
     mtype = state.get("target_type", "episodic")
     content = state.get("content", state.get("trigger_text", ""))[:500]
+    logger.info("memory.write", step=f"💾 保存到 {mtype} 记忆...")
 
-    if mtype == "episodic":
+    if mtype == "profile":
+        # 写入 stable_profile（缺陷二修复）
+        is_prof, field, value = is_profile_update(state.get("trigger_text", ""))
+        if is_prof and field not in ("", "_llm_resolve"):
+            write_memory("stable_profile", {field: value}, merge=True)
+            state["summary"] = f"📝 用户画像已更新: {field}={value}"
+        elif is_prof and field == "_llm_resolve":
+            # 泛指指令：用 LLM 提取的 content_memory 写入 profile
+            write_memory("stable_profile", {"_指令": content[:80]}, merge=True)
+            state["summary"] = f"📝 用户画像已更新: {content[:60]}..."
+        else:
+            add_episodic(content, tags=["auto"])
+            state["summary"] = f"📝 Agent 记忆已保存 (episodic)"
+    elif mtype == "episodic":
         add_episodic(content, tags=["auto"])
         state["summary"] = f"📝 Agent 记忆已保存 (episodic)"
     elif mtype == "task":
@@ -94,6 +120,7 @@ def write_node(state: MemoryAgentState) -> MemoryAgentState:
 
     save_trace("memory", {"decision": state["decision"], "type": mtype, "content": content[:100]})
     state["success"] = True
+    logger.info("memory.write.done", step=f"✅ 记忆保存完成: {state['summary']}")
     return state
 
 

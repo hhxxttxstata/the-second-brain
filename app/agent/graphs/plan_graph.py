@@ -59,18 +59,22 @@ def gather_node(state: PlanState) -> PlanState:
     state["run_id"] = f"plan_{uuid.uuid4().hex[:10]}"
     today = state.get("plan_date", date.today().isoformat())
 
+    logger.info("plan.gather", step="📖 读取用户画像和记忆...")
     # agent_data 记忆
     state["profile_text"] = format_profile()
     state["agent_context"] = build_context(task="daily plan", max_tokens=2000)["context"]
 
     # vault 日记（只读）
+    logger.info("plan.gather", step=f"📖 读取今日日记 ({today}.md)...")
     diary_path = f"diaries/{today}.md"
     diary = vault.read_file(diary_path, max_chars=8000)
     state["today_diary"] = diary if "不存在" not in diary else "(今天还没有日记)"
 
+    logger.info("plan.gather", step="📖 读取近期日记...")
     diaries = vault.read_folder("diaries", max_files=5, max_chars_per_file=3000)
     state["recent_diaries"] = diaries if "不存在" not in diaries else "(none)"
 
+    logger.info("plan.gather.done", step="✅ 资料收集完成")
     return state
 
 
@@ -96,6 +100,7 @@ PLAN_PROMPT = """You are a daily planning assistant. Generate a focused plan fro
 
 
 def plan_node(state: PlanState) -> PlanState:
+    logger.info("plan.planning", step=f"🤖 LLM 生成计划（基于 {len(state.get('plan_items', []))} 条已有数据）...")
     prompt = PLAN_PROMPT.format(
         profile=state.get("profile_text", "{}"),
         diary=state.get("today_diary", ""),
@@ -113,6 +118,7 @@ def plan_node(state: PlanState) -> PlanState:
         state["plan_items"] = json.loads(cleaned)
         if not isinstance(state["plan_items"], list):
             state["plan_items"] = [state["plan_items"]]
+        logger.info("plan.planning.done", step=f"✅ 计划生成完毕，共 {len(state['plan_items'])} 项")
     except Exception:
         logger.warning("plan_parse_failed", raw=state["plan_raw"][:200])
         state["plan_items"] = [{"title": "Daily review", "priority": "medium",
@@ -131,6 +137,7 @@ One line: "ok" or what's wrong."""
 
 def reflect_node(state: PlanState) -> PlanState:
     state["reflect_attempts"] = state.get("reflect_attempts", 0) + 1
+    logger.info("plan.reflect", step=f"🔍 反思计划（第 {state['reflect_attempts']} 次）...")
     plan_text = json.dumps(state.get("plan_items", []), ensure_ascii=False, indent=2)
     prompt = REFLECT_PROMPT.format(
         plan=plan_text, profile=state.get("profile_text", "")[:300],
@@ -140,6 +147,10 @@ def reflect_node(state: PlanState) -> PlanState:
     response = model.invoke(prompt)
     feedback = (response.content if hasattr(response, "content") else str(response)).strip().lower()
     state["reflect_feedback"] = "ok" if feedback.startswith("ok") else feedback
+    if state["reflect_feedback"] == "ok":
+        logger.info("plan.reflect.pass", step="✅ 计划通过反思")
+    else:
+        logger.info("plan.reflect.retry", step=f"🔄 计划需调整: {state['reflect_feedback'][:60]}")
     return state
 
 
@@ -154,6 +165,8 @@ def commit_node(state: PlanState) -> dict:
     today = state.get("plan_date", date.today().isoformat())
     items = state.get("plan_items", [])
     plan_id = f"plan_{uuid.uuid4().hex[:8]}"
+
+    logger.info("plan.commit", step=f"💾 保存计划结果共 {len(items)} 项...")
 
     # 写入 agent_data/memory/task_memory.json
     task_data = read_memory("task")
@@ -184,7 +197,7 @@ def commit_node(state: PlanState) -> dict:
                  tags=["plan"])
 
     state["plan_id"] = plan_id
-    logger.info("plan_saved", items=len(items), trace=plan_id)
+    logger.info("plan.commit.done", step="✅ 计划已存储，执行完毕")
     return state
 
 

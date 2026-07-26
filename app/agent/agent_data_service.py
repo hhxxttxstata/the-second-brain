@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,25 @@ MEMORY_FILES = {
 }
 
 
+def _deduplicate_todos(todos: list[dict]) -> list[dict]:
+    """对 task todos 去重：同标题合并，更新最新状态。"""
+    seen: dict[str, dict] = {}
+    for t in todos:
+        title = t.get("title", "").strip()
+        if not title:
+            continue
+        if title in seen:
+            existing = seen[title]
+            prio_order = {"high": 3, "medium": 2, "low": 1}
+            if prio_order.get(t.get("priority", "medium"), 2) > prio_order.get(existing.get("priority", "medium"), 2):
+                existing["priority"] = t["priority"]
+            if t.get("status", "pending") != "pending":
+                existing["status"] = t["status"]
+        else:
+            seen[title] = dict(t)
+    return list(seen.values())
+
+
 def read_memory(memory_type: str) -> dict[str, Any]:
     """读取对应的 memory JSON 文件。"""
     rel = MEMORY_FILES.get(memory_type)
@@ -80,10 +100,14 @@ def write_memory(memory_type: str, data: dict[str, Any],
         existing = _load_json(path)
         existing.update(data)
         existing["__updated_at"] = datetime.now().isoformat()
+        if memory_type == "task" and "todos" in existing:
+            existing["todos"] = _deduplicate_todos(existing["todos"])
         _save_json(path, existing)
     else:
         data["__created_at"] = datetime.now().isoformat()
         data["__updated_at"] = datetime.now().isoformat()
+        if memory_type == "task" and "todos" in data:
+            data["todos"] = _deduplicate_todos(data["todos"])
         _save_json(path, data)
 
 
@@ -103,11 +127,56 @@ def search_episodic(query: str, limit: int = 5) -> list[dict[str, Any]]:
     return entries_sorted[:limit]
 
 
+# ── 矛盾记忆检测与降级 ──
+
+_CONFLICT_PAIRS: list[tuple[re.Pattern, str | None, str | None]] = [
+    # 模式匹配对象，肯定词，否定词
+    # "吃" vs "不吃" 检测
+    (re.compile(r"(不?吃)"), "吃", "不吃"),
+    # "喜欢" vs "不喜欢" 检测
+    (re.compile(r"(不?喜欢)"), "喜欢", "不喜欢"),
+    (re.compile(r"(讨厌)"), "讨厌", "不讨厌"),
+    # 纠错关键词
+    (re.compile(r"(错误|不对|更正|记错|不是|更新)"), None, None),
+]
+
+
+def _mark_conflicting_entries(text: str, entries: list[dict]) -> None:
+    """若新内容与旧记录矛盾，将旧记录标记为 deprecated。"""
+    for entry in entries:
+        old = entry.get("content", "")
+        tags = entry.get("tags", [])
+        if "deprecated" in tags:
+            continue
+        for pattern, pos_word, neg_word in _CONFLICT_PAIRS:
+            if pos_word and neg_word:
+                if pos_word in old and neg_word in text:
+                    entry.setdefault("tags", []).append("deprecated")
+                    entry["superseded_by"] = text[:60]
+                    break
+                if neg_word in old and pos_word in text:
+                    entry.setdefault("tags", []).append("deprecated")
+                    entry["superseded_by"] = text[:60]
+                    break
+            else:
+                if pattern.search(old) and pattern.search(text):
+                    # 两段都含纠错词 → 主题相似 → 同时标记都可能不靠谱
+                    old_kw = set(old.replace("不", "").split()[:5])
+                    new_kw = set(text.replace("不", "").split()[:5])
+                    if old_kw & new_kw:
+                        entry.setdefault("tags", []).append("deprecated")
+                        entry["superseded_by"] = text[:60]
+                        break
+
+
 def add_episodic(content: str, tags: list[str] | None = None) -> None:
-    """追加一条情景记忆。"""
+    """追加一条情景记忆，自动检测并降级矛盾的旧记忆。"""
     data = read_memory("episodic")
     if "entries" not in data:
         data["entries"] = []
+
+    _mark_conflicting_entries(content, data["entries"])
+
     data["entries"].append({
         "content": content,
         "tags": tags or [],
@@ -119,19 +188,45 @@ def add_episodic(content: str, tags: list[str] | None = None) -> None:
     write_memory("episodic", data, merge=False)
 
 
+# ── Stable Profile 更新 ──
+
+PROFILE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"称呼.*?(?:为|叫)\s*(\S+)"), "称谓"),
+    (re.compile(r"(?:以|叫)后.*?叫我\s*(\S+)"), "称谓"),
+    (re.compile(r"(?:以后|每次).*?称呼"), "_generic_instruction"),
+]
+
+
+def is_profile_update(text: str) -> tuple[bool, str, str | None]:
+    """判断文本是否属于 profile 级更新，返回 (is_profile, field, value)。"""
+    for pattern, field in PROFILE_PATTERNS:
+        m = pattern.search(text)
+        if m and field != "_generic_instruction":
+            return True, field, m.group(1)
+        if m and field == "_generic_instruction":
+            return True, "_llm_resolve", None
+    return False, "", None
+
+
 def format_profile() -> str:
-    """格式化 profile 供 LLM 上下文使用。"""
+    """格式化 profile 供 LLM 上下文使用，排除带 _ 前缀的内部字段。"""
     data = read_memory("stable_profile")
     if not data:
         return "(暂无用户画像)"
-    return "\n".join(f"- {k}: {v}" for k, v in data.items()
-                     if not k.startswith("__"))
+    # 过滤内部字段 + 空的字段
+    items = [(k, v) for k, v in data.items()
+             if not k.startswith("__") and not k.startswith("_") and v]
+    if not items:
+        return "(暂无用户画像)"
+    return "\n".join(f"- {k}: {v}" for k, v in items)
 
 
 def format_episodic(limit: int = 10) -> str:
-    """格式化情景记忆供 LLM 上下文使用。"""
+    """格式化情景记忆供 LLM 上下文使用，过滤 deprecated 条目。"""
     data = read_memory("episodic")
-    entries = data.get("entries", [])[-limit:]
+    all_entries = data.get("entries", [])
+    active = [e for e in all_entries if "deprecated" not in e.get("tags", [])]
+    entries = active[-limit:]
     if not entries:
         return "(暂无近期记忆)"
     lines = []
@@ -153,11 +248,21 @@ def format_tasks() -> str:
     if todos:
         lines.append("待办:")
         for t in todos[-10:]:
-            lines.append(f"  - [ ] {t.get('title', '')} ({t.get('priority', 'medium')})")
+            desc = t.get('description', '')
+            title = t.get('title', '')
+            if desc:
+                lines.append(f"  - [ ] {title} ({t.get('priority', 'medium')}) — {desc[:120]}")
+            else:
+                lines.append(f"  - [ ] {title} ({t.get('priority', 'medium')})")
     if history:
         lines.append("历史计划:")
-        for h in history[-5:]:
+        for h in history[-3:]:
+            items = h.get("items", [])
             lines.append(f"  - {h.get('date', '')}: {h.get('summary', '')}")
+            for it in items[:5]:
+                desc = it.get("description", "")
+                if desc:
+                    lines.append(f"    · {it.get('title', '')} — {desc[:200]}")
     return "\n".join(lines) if lines else "(暂无任务记忆)"
 
 

@@ -7,6 +7,8 @@ import sys
 import uuid
 from datetime import date
 
+from app.core.logging import logger
+
 _THREAD_ID = None
 
 
@@ -68,6 +70,9 @@ def handle_chat(text: str) -> str | None:
 
 
 def main():
+    from app.core.logging import configure_logging
+    configure_logging()
+
     print()
     print("🤖 个人知识 Agent — 纯 Obsidian 架构")
     print("=" * 50)

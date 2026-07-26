@@ -43,6 +43,9 @@ class OrchestratorState(TypedDict):
 
     success: bool
     error: str | None
+    run_id: str | None       # 运行 ID
+
+    step_log: list[dict]     # 步骤日志，供 UI 展示思考过程
 
 
 # ---------------------------------------------------------------------------
@@ -53,10 +56,17 @@ SUPERVISOR_PROMPT = """You are the orchestrator of a personal knowledge agent sy
 input and route it to the correct sub-agent.
 
 ## Available agents:
-1. **chatbot** — general conversation, Q&A, casual chat (default)
+1. **chatbot** — general conversation, Q&A, casual chat (default). Handles: questions, searches, diary queries, book recommendations, fund queries — anything that needs to read vault notes or use tools.
 2. **plan** — "generate daily plan", "what should I do today", "今日计划"
 3. **reflect** — "reflect on this", "analyze", "critique", "帮我分析", "反思"
 4. **memory** — "remember", "don't forget", "save this", "write memory", "记忆"
+
+## Routing rules:
+- If the user asks "what did I write", "search my notes", "最近写了什么", "帮我搜" → route to **chatbot** (it reads the vault)
+- If the user asks "save this", "remember", "记忆" → route to **memory**
+- If the user asks "analyze", "reflect", "反思" → route to **reflect**
+- If the user asks "plan", "今日计划" → route to **plan**
+- For anything else (conversation, Q&A, recommendations, queries) → route to **chatbot**
 
 ## User input:
 {input}
@@ -81,6 +91,7 @@ def supervisor_node(state: OrchestratorState) -> OrchestratorState:
     """LLM 决定路由。"""
     conv_text = "\n".join(state.get("conversation", [])[-5:]) or "(none)"
 
+    logger.info("orchestrator.supervisor", msg="分析用户意图，决定路由...")
     prompt = SUPERVISOR_PROMPT.format(
         input=state.get("input_text", ""),
         conversation=conv_text,
@@ -95,9 +106,13 @@ def supervisor_node(state: OrchestratorState) -> OrchestratorState:
         data = json.loads(text)
         state["route"] = data.get("route", "chatbot")
         state["route_reason"] = data.get("reason", "")
+        logger.info("orchestrator.route",
+                    route=state["route"],
+                    reason=state["route_reason"])
     except Exception:
         state["route"] = "chatbot"
         state["route_reason"] = "fallback: parse error"
+        logger.warning("orchestrator.route_fallback", error="parse error")
     return state
 
 
@@ -107,13 +122,25 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
     user_id = state.get("user_id", "default_user")
     text = state.get("input_text", "")
 
+    route_labels = {
+        "chatbot": "💬 对话回答",
+        "plan": "📋 生成计划",
+        "reflect": "🔍 反思分析",
+        "memory": "🧠 记忆处理",
+    }
+    logger.info("orchestrator.execute",
+                route=route,
+                step=f"开始执行 → {route_labels.get(route, route)}")
+
     # 创建 Trace
     trace = TraceRecord(route, text[:100])
+    state["run_id"] = trace.trace_id
 
     try:
         trace.start()
 
         if route == "plan":
+            logger.info("plan.run", step="📋 读取日记和记忆并生成计划...")
             r = run_plan_graph(user_id=user_id)
             items = r.get("items", [])
             state["result_data"] = r
@@ -125,10 +152,13 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
                             "stable_profile": "🎯", "default": "•"}.get(src, "•")
                     lines.append(f"  {i}. {icon} [{item.get('priority', 'MEDIUM')}] {item.get('title', '')}")
                 state["result"] = "\n".join(lines)
+                logger.info("plan.complete", step=f"✅ 计划生成完成，共 {len(items)} 项")
             else:
                 state["result"] = f"❌ 生成计划失败: {r.get('error', '')}"
+                logger.error("plan.failed", error=r.get('error', ''))
 
         elif route == "reflect":
+            logger.info("reflect.run", step=f"🔍 开始反思分析: {text[:60]}...")
             r = run_reflect(subject="diary_or_note", content=text, user_id=user_id)
             state["result_data"] = r
             if r.get("success"):
@@ -139,20 +169,36 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
                     f"📝 总结:\n{r.get('summary', '')}",
                 ]
                 state["result"] = "\n".join(parts)
+                logger.info("reflect.complete", step="✅ 反思分析完成")
             else:
                 state["result"] = f"❌ 反思失败: {r.get('error', '')}"
+                logger.error("reflect.failed", error=r.get('error', ''))
 
         elif route == "memory":
+            logger.info("memory.run", step=f"🧠 判断是否需要记忆: {text[:60]}...")
             r = run_memory_agent(trigger_text=text, user_id=user_id)
             state["result_data"] = r
             state["result"] = r.get("summary", "记忆处理完成")
             if r.get("decision") in ("write", "update"):
                 trace.add_memory_update("episodic", state["result"][:100])
+                logger.info("memory.saved", step=f"✅ 已保存记忆: {state['result']}")
+            else:
+                logger.info("memory.skip", step="⏭️ 无需记忆，已跳过")
 
         else:  # chatbot
+            logger.info("chatbot.run", step=f"💬 构建上下文并回答: {text[:60]}...")
             # 用 chatbot_graph 运行对话
             from .chatbot_graph import build_chatbot_graph
             from langchain_core.messages import HumanMessage
+            from ..agent_data_service import build_context
+
+            # 先构建上下文并记录到 trace（缺陷八修复）
+            ctx = build_context(task=text)
+            for s in ctx.get("sources", []):
+                trace.add_context_source(
+                    s.get("layer", "?"), s.get("type", "?"),
+                    len(ctx.get("context", "")),
+                )
 
             graph = build_chatbot_graph()
             # 用 orchestrator 的 thread_id 加后缀，保证连续对话共享同一 checkpoint
@@ -165,18 +211,23 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
             last_msg = response["messages"][-1]
             state["result"] = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
             state["result_data"] = {"message_count": len(response["messages"])}
+            logger.info("chatbot.complete", step="✅ 回答完成")
 
         state["success"] = True
         trace.final_output = state.get("result", "")[:500]
         trace.success = True
 
     except Exception as exc:
-        logger.error("orchestrator_exec_failed", route=route, error=str(exc))
-        state["result"] = f"❌ 执行 {route} 时出错: {str(exc)}"
-        state["error"] = str(exc)
+        error_msg = str(exc)
+        # 截断超长 API 错误消息，保留关键信息
+        if "Error code:" in error_msg and len(error_msg) > 200:
+            error_msg = error_msg[:200] + "..."
+        logger.error("orchestrator_exec_failed", route=route, error=error_msg)
+        state["result"] = f"❌ 执行 {route} 时出错: {error_msg}"
+        state["error"] = error_msg
         state["success"] = False
         trace.success = False
-        trace.error = str(exc)
+        trace.error = error_msg
 
     finally:
         trace.stop()
@@ -220,8 +271,10 @@ def run_orchestrator(input_text: str,
         thread_id: 对话线程 ID。同一 thread_id 的多轮调用共享对话历史。
     """
     start = time.monotonic()
+    logger.info("orchestrator.start", step="🚀 Orchestrator 启动", text=input_text[:80])
 
     graph = build_orchestrator()
+    run_id = thread_id or f"orch_{uuid.uuid4().hex[:10]}"
     initial = {
         "user_id": user_id,
         "input_text": input_text,
@@ -232,12 +285,19 @@ def run_orchestrator(input_text: str,
         "result_data": {},
         "success": True,
         "error": None,
+        "run_id": run_id,
+        "step_log": [],
     }
 
     try:
-        run_id = thread_id or f"orch_{uuid.uuid4().hex[:10]}"
         result = graph.invoke(initial, {"configurable": {"thread_id": run_id}})
         latency = int((time.monotonic() - start) * 1000)
+        route = result.get("route", "?")
+        success = result.get("success", False)
+        logger.info("orchestrator.done",
+                    step=f"✅ 执行完毕 (route={route})",
+                    latency=f"{latency}ms",
+                    success=success)
         return {
             "success": result.get("success", False),
             "route": result.get("route", "?"),
@@ -245,7 +305,8 @@ def run_orchestrator(input_text: str,
             "result": result.get("result", ""),
             "result_data": result.get("result_data", {}),
             "latency_ms": latency,
+            "run_id": result.get("run_id", ""),
         }
     except Exception as exc:
-        logger.error("orchestrator_failed", error=str(exc))
+        logger.error("orchestrator.failed", step="❌ Orchestrator 执行失败", error=str(exc))
         return {"success": False, "error": str(exc), "route": "error", "result": str(exc)}
