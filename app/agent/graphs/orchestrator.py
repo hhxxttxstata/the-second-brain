@@ -57,15 +57,16 @@ input and route it to the correct sub-agent.
 
 ## Available agents:
 1. **chatbot** — general conversation, Q&A, casual chat (default). Handles: questions, searches, diary queries, book recommendations, fund queries — anything that needs to read vault notes or use tools.
-2. **plan** — "generate daily plan", "what should I do today", "今日计划"
+2. **plan** — daily plan generation + task/todo management (add/delete/update/merge/split todos). "generate daily plan", "what should I do today", "今日计划"
 3. **reflect** — "reflect on this", "analyze", "critique", "帮我分析", "反思"
 4. **memory** — "remember", "don't forget", "save this", "write memory", "记忆"
 
 ## Routing rules:
-- If the user asks "what did I write", "search my notes", "最近写了什么", "帮我搜" → route to **chatbot** (it reads the vault)
-- If the user asks "save this", "remember", "记忆" → route to **memory**
+- If the user asks about or operates on **tasks/todos/待办** (add, delete, merge, split, update, mark, set status) → route to **plan**
+- If the user asks "what did I write", "search my notes", "最近写了什么", "帮我搜", or wants to search diary/notes → route to **chatbot** (it reads the vault)
 - If the user asks "analyze", "reflect", "反思" → route to **reflect**
-- If the user asks "plan", "今日计划" → route to **plan**
+- If the user asks "plan", "今日计划", "daily plan" → route to **plan**
+- If the user asks "please write", "save this", "remember", "记忆" → route to **memory**
 - For anything else (conversation, Q&A, recommendations, queries) → route to **chatbot**
 
 ## User input:
@@ -140,22 +141,45 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
         trace.start()
 
         if route == "plan":
-            logger.info("plan.run", step="📋 读取日记和记忆并生成计划...")
-            r = run_plan_graph(user_id=user_id)
-            items = r.get("items", [])
-            state["result_data"] = r
-            if r.get("success"):
-                lines = [f"📋 今日计划 ({r.get('date', '')})\n"]
-                for i, item in enumerate(items, 1):
-                    src = item.get("source", "")
-                    icon = {"diary_todo": "📓", "pending_task": "🔄", "signal": "📡",
-                            "stable_profile": "🎯", "default": "•"}.get(src, "•")
-                    lines.append(f"  {i}. {icon} [{item.get('priority', 'MEDIUM')}] {item.get('title', '')}")
-                state["result"] = "\n".join(lines)
-                logger.info("plan.complete", step=f"✅ 计划生成完成，共 {len(items)} 项")
+            # 判断是 task 操作还是每日计划
+            task_kw = ["todo", "task", "待办", "添加", "删除", "删掉",
+                       "新建", "创建", "改成", "拆成", "拆分", "merge",
+                       "合并", "标记", "状态", "强制"]
+            text_lower = text.lower()
+            is_task_op = any(kw in text_lower for kw in task_kw)
+
+            if is_task_op:
+                logger.info("plan.task_ops", step="📋 执行任务操作...")
+                from .plan_graph import run_task_ops
+                r = run_task_ops(user_input=text, user_id=user_id)
+                state["result_data"] = r
+                if r.get("success"):
+                    changes = r.get("changes", [])
+                    summary = r.get("summary", "")
+                    if changes:
+                        state["result"] = f"✅ 任务操作成功:\n" + "\n".join(f"  · {c}" for c in changes)
+                    else:
+                        state["result"] = f"ℹ️ {summary}"
+                    logger.info("plan.task_ops.done", step=f"✅ 任务操作完成: {summary[:80]}")
+                else:
+                    state["result"] = f"❌ 任务操作失败: {r.get('error', '')}"
             else:
-                state["result"] = f"❌ 生成计划失败: {r.get('error', '')}"
-                logger.error("plan.failed", error=r.get('error', ''))
+                logger.info("plan.run", step="📋 读取日记和记忆并生成计划...")
+                r = run_plan_graph(user_id=user_id)
+                items = r.get("items", [])
+                state["result_data"] = r
+                if r.get("success"):
+                    lines = [f"📋 今日计划 ({r.get('date', '')})\n"]
+                    for i, item in enumerate(items, 1):
+                        src = item.get("source", "")
+                        icon = {"diary_todo": "📓", "pending_task": "🔄", "signal": "📡",
+                                "stable_profile": "🎯", "default": "•"}.get(src, "•")
+                        lines.append(f"  {i}. {icon} [{item.get('priority', 'MEDIUM')}] {item.get('title', '')}")
+                    state["result"] = "\n".join(lines)
+                    logger.info("plan.complete", step=f"✅ 计划生成完成，共 {len(items)} 项")
+                else:
+                    state["result"] = f"❌ 生成计划失败: {r.get('error', '')}"
+                    logger.error("plan.failed", error=r.get('error', ''))
 
         elif route == "reflect":
             logger.info("reflect.run", step=f"🔍 开始反思分析: {text[:60]}...")

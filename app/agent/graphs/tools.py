@@ -1,10 +1,12 @@
 """LangChain tools — adapter layer over the new Tool Registry.
 
 graph tools.py → 工具代理（不直接写逻辑，统一走 ToolRegistry）
+
+工具列表现在从 ToolRegistry 动态生成，同时包含 native + MCP 工具。
 """
 from __future__ import annotations
 
-import functools
+import asyncio
 from typing import Any
 
 from langchain_core.tools import tool
@@ -28,21 +30,63 @@ def get_registry() -> ToolRegistry:
 
 
 def ensure_mcp_started() -> int:
-    """启动所有 MCP 服务器并注册工具。（在同步上下文中调用）"""
+    """启动所有 MCP 服务器并注册工具到 registry，逐个日志 + 独立容错。
+
+    MCP 工具注册逻辑在 reg.start() 中（_register_mcp_tool），
+    这里逐个启动、独立 try/except 确保单点故障不阻塞整体。
+    """
     import asyncio
     reg = get_registry()
     if reg._started:
-        return len([t for t in reg.list_tools_for_llm() if "[MCP/" in t.get("description", "")])
+        mcp_count = len([t for t in reg.list_tools_for_llm()
+                         if "[MCP/" in t.get("description", "")])
+        logger.info("mcp.already_started", count=mcp_count)
+        return mcp_count
+
     from app.tool_registry.registry import BUILTIN_MCP_SERVERS
     for cfg in BUILTIN_MCP_SERVERS:
         if cfg.name in ("github", "browser"):
+            logger.info("mcp.register", server=cfg.name,
+                        command=cfg.command, args=cfg.args)
             reg.register_mcp_server(cfg)
-    try:
-        count = asyncio.run(reg.start())
-        return count
-    except Exception as exc:
-        logger.error("mcp_start_failed", error=str(exc))
-        return 0
+
+    # 逐个启动，reg.start() 内部负责 _register_mcp_tool
+    started = 0
+    for name, server in list(reg._mcp_servers.items()):
+        logger.info("mcp.starting", server=name)
+        try:
+            # reg.start() 对单个 server 调用 server.start()
+            # 但我们只需对当前 server 调用
+            ok = asyncio.run(server.start())
+            if ok:
+                # 注册该 server 的工具到 registry
+                for t in server.tools:
+                    t_name = f"{server.name}_{t.get('name', '?')}"
+                    schema = t.get("inputSchema", t.get("input_schema", {}))
+                    desc = t.get("description", server.config.description)
+                    reg._register_mcp_tool(
+                        t_name, desc, schema, server.name,
+                        server.config.risk_level,
+                        server.config.side_effects,
+                    )
+                    started += 1
+                tool_names = [t.get("name", "?") for t in server.tools]
+                logger.info("mcp.started", server=name,
+                            tools=len(server.tools),
+                            tool_names=tool_names[:5])
+            else:
+                logger.warning("mcp.start_failed", server=name)
+        except Exception as exc:
+            logger.error("mcp.start_error", server=name,
+                         error=str(exc)[:200],
+                         error_type=type(exc).__name__)
+
+    reg._started = True
+    actual_mcp = len([t for t in reg.list_tools_for_llm()
+                      if "[MCP/" in t.get("description", "")])
+    logger.info("mcp.summary", total=actual_mcp, started=started,
+                servers=len(reg._mcp_servers))
+    return actual_mcp
 
 
 def list_all_tools_for_llm() -> list[dict[str, Any]]:
@@ -58,38 +102,60 @@ async def execute_tool(name: str, params: dict[str, Any]) -> dict[str, Any]:
 
 # ── 生成 LangChain tool list ──
 
-def _build_langchain_tools() -> list:
-    """把 ToolRegistry 中的工具转为 LangChain StructuredTool 列表。"""
+def build_agent_tools() -> list:
+    """从 ToolRegistry 动态生成完整的工具列表（native + MCP）。
+
+    每工具有独立日志，失败不阻塞整体。
+    """
     registry = get_registry()
-    lc_tools = []
+    lc_tools: list = []
+    native_count = 0
+    mcp_count = 0
+    failed = 0
 
     for t_info in registry.list_tools_for_llm():
         name = t_info["name"]
-        description = t_info["description"]
+        description = t_info.get("description", "")
         schema = t_info.get("input_schema", {})
+        source = "MCP" if "[MCP/" in description else "native"
 
-        # 生成一个适配器函数
-        async def _make_async_fn(t_name: str = name):
+        # 生成适配器函数（延迟执行）
+        async def _make_fn(t_name: str = name, t_desc: str = description):
             async def fn(**kwargs: Any) -> str:
-                result = await registry.execute(t_name, kwargs)
-                if result.get("success"):
-                    r = result.get("result", "")
-                    return str(r) if not isinstance(r, str) else r
-                return f"❌ {result.get('error', 'unknown error')}"
+                try:
+                    result = await registry.execute(t_name, kwargs)
+                    if result.get("success"):
+                        r = result.get("result", "")
+                        return str(r) if not isinstance(r, str) else r
+                    return f"❌ {result.get('error', 'unknown error')}"
+                except Exception as exc:
+                    logger.error("tool_exec_failed", tool=t_name, error=str(exc)[:200])
+                    return f"❌ {exc}"
 
             fn.__name__ = t_name
-            fn.__doc__ = description
+            fn.__doc__ = t_desc
             return fn
 
-        import asyncio
-        fn = asyncio.run(_make_async_fn(name))
+        try:
+            fn = asyncio.run(_make_fn())
+            lc_tools.append(StructuredTool.from_function(
+                func=fn,
+                name=name,
+                description=description,
+                args_schema=None,
+            ))
+            if source == "MCP":
+                mcp_count += 1
+            else:
+                native_count += 1
+        except Exception as exc:
+            failed += 1
+            logger.error("tool.build_failed", tool=name,
+                         error=str(exc)[:200], source=source)
 
-        lc_tools.append(StructuredTool.from_function(
-            func=fn,
-            name=name,
-            description=description,
-            args_schema=None,  # schema 在 bind_tools 时通过 input_schema 传
-        ))
+    logger.info("tools.build_complete",
+                native=native_count, mcp=mcp_count,
+                failed=failed, total=len(lc_tools))
 
     return lc_tools
 
@@ -98,7 +164,6 @@ def _build_langchain_tools() -> list:
 
 def _sync_execute(name: str, **kwargs: Any) -> str:
     """同步执行工具（用于当前 graph 代码）。"""
-    import asyncio
     result = asyncio.run(execute_tool(name, kwargs))
     if result.get("success"):
         r = result.get("result", "")
@@ -106,9 +171,8 @@ def _sync_execute(name: str, **kwargs: Any) -> str:
     return f"❌ {result.get('error', 'unknown error')}"
 
 
-# ── 暴露给 graph 使用的工具列表 ──
+# ── 暴露给 graph 使用的工具列表（保留 @tool 装饰器独立函数以保持 IDE 类型推断） ──
 
-# 先用同步版 wrapper 保持兼容
 @tool
 def search_vault(keyword: str, folder: str | None = None) -> str:
     """全文搜索 Obsidian vault 中的笔记/日记。"""
@@ -169,10 +233,31 @@ def get_ai_news(max_items: int = 5) -> str:
     return _sync_execute("get_ai_news", max_items=max_items)
 
 
-# ── 注册所有 native 工具后生成列表 ──
-AGENT_TOOLS = [
-    search_vault, read_folder, read_file,
-    read_memory, write_memory, update_task_status,
-    search_web,
-    get_fund_data, get_github_trending, get_ai_news,
-]
+# ── 动态生成的完整工具列表 ──
+
+_agent_tools_cache: list | None = None
+
+
+def get_agent_tools() -> list:
+    """懒加载 AGENT_TOOLS，首次调用时触发 MCP 启动 + 动态生成。
+
+    MCP 启动失败不阻塞——确保 native 工具始终可用。
+    """
+    global _agent_tools_cache
+    if _agent_tools_cache is None:
+        # 必须先启动 MCP，再构建工具列表
+        ensure_mcp_started()
+        _agent_tools_cache = build_agent_tools()
+    return _agent_tools_cache
+
+
+def reset_agent_tools_cache() -> None:
+    """重置缓存（用于测试 / MCP 重连后）。"""
+    global _agent_tools_cache
+    _agent_tools_cache = None
+
+
+# 向后兼容：静态 import 用 get_agent_tools() 获取实际列表
+# 旧代码 from .tools import AGENT_TOOLS → 请改用 get_agent_tools()
+AGENT_TOOLS: list = []
+

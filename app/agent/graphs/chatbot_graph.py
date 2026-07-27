@@ -16,7 +16,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from ..agent_data_service import build_context
 from ..trace import TraceSession
 from .llm import get_chat_model
-from .tools import AGENT_TOOLS
+from .tools import get_agent_tools
 
 from app.core.logging import logger
 from typing import Any
@@ -81,7 +81,8 @@ def gather_context_node(state: MessagesState) -> dict:
 
 def call_model_node(state: MessagesState) -> dict:
     logger.info("chatbot.llm", step="🤖 LLM 思考中...")
-    model = get_chat_model().bind_tools(AGENT_TOOLS)
+    tools = get_agent_tools()
+    model = get_chat_model().bind_tools(tools)
     response = model.invoke(state["messages"])
     has_tool_calls = hasattr(response, "tool_calls") and len(response.tool_calls) > 0
     if has_tool_calls:
@@ -97,7 +98,7 @@ def build_chatbot_graph():
 
     graph.add_node("gather_context", gather_context_node)
     graph.add_node("llm", call_model_node)
-    graph.add_node("tools", ToolNode(AGENT_TOOLS))
+    graph.add_node("tools", ToolNode(get_agent_tools()))
 
     graph.add_edge(START, "gather_context")
     graph.add_edge("gather_context", "llm")

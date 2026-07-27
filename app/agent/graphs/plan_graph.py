@@ -3,10 +3,13 @@
 流程: gather (读 vault 日记 + agent_data 记忆) → plan (LLM) → reflect (LLM) ──→ commit (写 agent_data)
                                                                      ↑            │
                                                                      └── replan ──┘
+
+Task Ops: 独立的 todo CRUD 入口（添加/删除/合并/更新状态/拆分）。
 """
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from datetime import date
@@ -219,6 +222,177 @@ def build_plan_graph():
     builder.add_edge("commit", "__end__")
     _graph = builder.compile(checkpointer=MemorySaver())
     return _graph
+
+
+TASK_OPS_PROMPT = """You are a todo/task manager. Parse the user's request into structured operations on their task list.
+
+## Current tasks:
+{tasks}
+
+## User request:
+{input}
+
+## Output JSON — ONLY valid JSON, no other text:
+{{
+  "ops": [
+    {{
+      "action": "add|delete|update|merge|split|skip",
+      "task_title": "exact title or fuzzy match",
+      "new_title": "for rename/split",
+      "status": "pending|done|in_progress|cancelled",
+      "priority": "high|medium|low",
+      "dedup": true,
+      "note": "reason for this operation"
+    }}
+  ],
+  "summary": "one-line summary of what was done"
+}}
+
+## Rules:
+- If user says "merge" or "当做同一个事" or "就当我是说同一个事" or "同一个" → action=merge, dedup=true
+- If user says "强制新建" or "不要检查是否重复" → action=add, dedup=false
+- If user says "拆成" or "split" → action=split, new_title=new title
+- If user says "删掉" or "删除" or "取消" → action=delete
+- If user says "标记完成"/"已完成" → action=update, status=done
+- If user explicitly states final intent after changes ("算了，还是..."), use the FINAL intent
+- If user input is NOT about task operations → ops=[{{"action":"skip"}}]
+"""
+
+
+def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, Any]:
+    """解析用户输入中的 todo 操作指令并执行 CRUD。"""
+    from ..agent_data_service import read_memory, write_memory, _deduplicate_todos
+
+    start = time.monotonic()
+    logger.info("plan.task_ops", step="📋 解析任务操作...")
+
+    # 读取当前 todos
+    task_data = read_memory("task")
+    if "todos" not in task_data:
+        task_data["todos"] = []
+    tasks_str = format_tasks()[:1500]
+
+    prompt = TASK_OPS_PROMPT.format(tasks=tasks_str, input=user_input[:2000])
+    model = get_chat_model(temperature=0.1)
+    try:
+        response = model.invoke(prompt)
+        text = response.content if hasattr(response, "content") else str(response)
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
+        data = json.loads(text)
+        ops = data.get("ops", [])
+        summary = data.get("summary", "")
+    except Exception as e:
+        logger.warning("plan.task_ops.parse_failed", error=str(e))
+        return {"success": False, "error": f"解析失败: {e}", "latency_ms": int((time.monotonic() - start) * 1000)}
+
+    if not ops or ops[0].get("action") == "skip":
+        logger.info("plan.task_ops.skip", step="⏭️ 输入不是任务操作")
+        return {"success": True, "ops": [], "summary": "⏭️ 未检测到任务操作", "todos": task_data["todos"]}
+
+    todo_list = list(task_data["todos"])
+    changes = []
+    for op in ops:
+        action = op.get("action", "")
+        title = op.get("task_title", "")
+
+        if action == "add":
+            new_todo = {
+                "title": title or op.get("new_title", "Unnamed"),
+                "priority": op.get("priority", "medium"),
+                "status": op.get("status", "pending"),
+            }
+            dedup = op.get("dedup", True)
+            if dedup:
+                # 检查同名
+                existing = [t for t in todo_list if t.get("title", "").strip() == title.strip()]
+                if existing:
+                    # 更新已有的
+                    for t in existing:
+                        if op.get("priority"):
+                            t["priority"] = op["priority"]
+                        if op.get("status"):
+                            t["status"] = op["status"]
+                    changes.append(f"已更新: {title}")
+                else:
+                    todo_list.append(new_todo)
+                    changes.append(f"已添加: {title}")
+            else:
+                todo_list.append(new_todo)
+                changes.append(f"已强制添加: {title}")
+
+        elif action == "delete":
+            original_count = len(todo_list)
+            todo_list = [t for t in todo_list if t.get("title", "").strip() != title.strip()]
+            if len(todo_list) < original_count:
+                changes.append(f"已删除: {title}")
+
+        elif action == "update":
+            for t in todo_list:
+                if t.get("title", "").strip() == title.strip():
+                    if op.get("status"):
+                        t["status"] = op["status"]
+                    if op.get("priority"):
+                        t["priority"] = op["priority"]
+                    changes.append(f"已更新: {title}")
+                    break
+
+        elif action == "merge":
+            # 同名合并：删除重复，保留最新状态
+            seen_titles = set()
+            merged = []
+            for t in todo_list:
+                ttl = t.get("title", "").strip()
+                if ttl == title.strip():
+                    if ttl not in seen_titles:
+                        if op.get("priority"):
+                            t["priority"] = op["priority"]
+                        if op.get("status"):
+                            t["status"] = op["status"]
+                        merged.append(t)
+                        seen_titles.add(ttl)
+                    else:
+                        changes.append(f"已合并重复: {title}")
+                else:
+                    merged.append(t)
+            todo_list = merged
+
+        elif action == "split":
+            original = [t for t in todo_list if t.get("title", "").strip() == title.strip()]
+            if original:
+                todo_list = [t for t in todo_list if t.get("title", "").strip() != title.strip()]
+                new_titles = op.get("new_title", "").split(",") if op.get("new_title") else []
+                for nt in new_titles:
+                    nt = nt.strip()
+                    if nt:
+                        todo_list.append({"title": nt, "priority": "medium", "status": "pending"})
+                changes.append(f"已拆分: {title} → {', '.join(new_titles)}")
+
+    # 写回
+    if changes:
+        task_data["todos"] = _deduplicate_todos(todo_list)
+        if "history" not in task_data:
+            task_data["history"] = []
+        task_data["history"].append({
+            "plan_id": f"taskop_{uuid.uuid4().hex[:8]}",
+            "date": date.today().isoformat(),
+            "summary": "; ".join(changes),
+            "items": [{"title": c, "priority": "medium", "description": c, "source": "task_op"} for c in changes],
+        })
+        write_memory("task", task_data, merge=False)
+        add_episodic(f"任务操作: {'; '.join(changes)}", tags=["task_op"])
+        logger.info("plan.task_ops.done", step=f"✅ 任务操作完成: {'; '.join(changes)}")
+
+    result_summary = summary or "; ".join(changes) if changes else "无变更"
+
+    return {
+        "success": True,
+        "ops": ops,
+        "summary": result_summary,
+        "changes": changes,
+        "todos": task_data["todos"],
+        "latency_ms": int((time.monotonic() - start) * 1000),
+    }
 
 
 def run_plan_graph(user_id: str = "default_user",

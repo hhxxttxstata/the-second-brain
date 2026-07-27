@@ -130,23 +130,32 @@ def _check_trace_health() -> dict[str, Any]:
 
 def _check_tools() -> dict[str, Any]:
     """检查工具注册情况。"""
-    from app.agent.graphs.tools import AGENT_TOOLS
+    from app.agent.graphs.tools import get_agent_tools
 
-    tool_names = [t.name for t in AGENT_TOOLS]
+    tool_list = get_agent_tools()
+    tool_names = [t.name for t in tool_list]
+    mcp_names = [n for n in tool_names if "_" in n and n.split("_")[0] in ("github", "browser")]
+    native_names = [n for n in tool_names if n not in mcp_names]
     return {
         "status": "✅",
         "tool_count": len(tool_names),
+        "native_count": len(native_names),
+        "mcp_count": len(mcp_names),
         "tools": tool_names,
         "layers": {
-            "vault_readonly": [n for n in tool_names if n in (
-                "search_vault", "read_folder", "read_file", "get_user_profile", "vault_structure"
-            )],
-            "agent_data_rw": [n for n in tool_names if n in (
-                "read_memory", "write_episodic_memory", "update_task_status", "get_today_state"
-            )],
-            "external": [n for n in tool_names if n in (
-                "get_fund_data", "get_github_trending", "get_ai_news"
-            )],
+            "native_only": {
+                "vault_readonly": [n for n in native_names if n in (
+                    "search_vault", "read_folder", "read_file", "get_user_profile", "vault_structure"
+                )],
+                "agent_data_rw": [n for n in native_names if n in (
+                    "read_memory", "write_episodic_memory", "update_task_status", "get_today_state"
+                )],
+                "external": [n for n in native_names if n in (
+                    "get_fund_data", "get_github_trending", "get_ai_news"
+                )],
+            },
+            "github_mcp": [n for n in mcp_names if n.startswith("github_")],
+            "browser_mcp": [n for n in mcp_names if n.startswith("browser_")],
         }
     }
 
