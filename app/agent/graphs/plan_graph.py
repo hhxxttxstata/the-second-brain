@@ -249,6 +249,7 @@ TASK_OPS_PROMPT = """You are a todo/task manager. Parse the user's request into 
 }}
 
 ## Rules:
+- **merge 规则**: 如果用户说"Add a new task: X"且 existing tasks 里有同名/近似任务 → action=merge|update, dedup=true
 - If user says "merge" or "当做同一个事" or "就当我是说同一个事" or "同一个" → action=merge, dedup=true
 - If user says "强制新建" or "不要检查是否重复" → action=add, dedup=false
 - If user says "拆成" or "split" → action=split, new_title=new title
@@ -259,6 +260,22 @@ TASK_OPS_PROMPT = """You are a todo/task manager. Parse the user's request into 
 """
 
 
+def load_current_tasks() -> str:
+    """格式化当前 todo 列表，供 LLM 直接看到每个任务的精确标题。"""
+    from ..agent_data_service import read_memory
+    data = read_memory("task")
+    todos = data.get("todos", [])
+    if not todos:
+        return "(empty)"
+    lines = ["Current tasks (JSON):"]
+    for i, t in enumerate(todos, 1):
+        title = t.get("title", "")
+        prio = t.get("priority", "medium")
+        status = t.get("status", "pending")
+        lines.append(f"  {i}. title=\"{title}\" priority={prio} status={status}")
+    return "\n".join(lines)
+
+
 def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, Any]:
     """解析用户输入中的 todo 操作指令并执行 CRUD。"""
     from ..agent_data_service import read_memory, write_memory, _deduplicate_todos
@@ -266,11 +283,11 @@ def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, An
     start = time.monotonic()
     logger.info("plan.task_ops", step="📋 解析任务操作...")
 
-    # 读取当前 todos
+    # 读取当前 todos 并用结构化格式展示
     task_data = read_memory("task")
     if "todos" not in task_data:
         task_data["todos"] = []
-    tasks_str = format_tasks()[:1500]
+    tasks_str = load_current_tasks()
 
     prompt = TASK_OPS_PROMPT.format(tasks=tasks_str, input=user_input[:2000])
     model = get_chat_model(temperature=0.1)
@@ -338,24 +355,31 @@ def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, An
                     break
 
         elif action == "merge":
-            # 同名合并：删除重复，保留最新状态
-            seen_titles = set()
-            merged = []
-            for t in todo_list:
-                ttl = t.get("title", "").strip()
-                if ttl == title.strip():
-                    if ttl not in seen_titles:
+            # 同名合并：保留最新状态
+            if todo_list:
+                merged = []
+                for t in todo_list:
+                    ttl = t.get("title", "").strip()
+                    if ttl == title.strip():
                         if op.get("priority"):
                             t["priority"] = op["priority"]
                         if op.get("status"):
                             t["status"] = op["status"]
-                        merged.append(t)
-                        seen_titles.add(ttl)
-                    else:
-                        changes.append(f"已合并重复: {title}")
-                else:
                     merged.append(t)
-            todo_list = merged
+                # 去重
+                seen = set()
+                deduped = []
+                for t in merged:
+                    ttl = t.get("title", "").strip()
+                    if ttl in seen:
+                        continue
+                    seen.add(ttl)
+                    deduped.append(t)
+                if len(deduped) < len(merged):
+                    changes.append(f"已合并重复: {title}")
+                if op.get("status") or op.get("priority"):
+                    changes.append(f"已更新: {title} (status={op.get('status','?')})")
+                todo_list = deduped
 
         elif action == "split":
             original = [t for t in todo_list if t.get("title", "").strip() == title.strip()]

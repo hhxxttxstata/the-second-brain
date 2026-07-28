@@ -62,11 +62,13 @@ input and route it to the correct sub-agent.
 4. **memory** — "remember", "don't forget", "save this", "write memory", "记忆"
 
 ## Routing rules:
-- If the user asks about or operates on **tasks/todos/待办** (add, delete, merge, split, update, mark, set status) → route to **plan**
+- If the user is **questioning or disputing** existing plan items or notes ("我哪里说了要去", "被污染", "我没说过"), rather than just operating on tasks → route to **chatbot** (it reads vault + memory to verify the source first)
+- If the user asks about or operates on **tasks/todos/待办** (add, delete, merge, split, update, mark, set status) and IS NOT disputing the source → route to **plan**
 - If the user asks "what did I write", "search my notes", "最近写了什么", "帮我搜", or wants to search diary/notes → route to **chatbot** (it reads the vault)
-- If the user asks "analyze", "reflect", "反思" → route to **reflect**
-- If the user asks "plan", "今日计划", "daily plan" → route to **plan**
+- If the user says "analyze", "reflect", "反思" → route to **reflect**
+- If the user says "plan", "今日计划", "daily plan" → route to **plan**
 - If the user asks "please write", "save this", "remember", "记忆" → route to **memory**
+- If the user asks questions about themselves ("我叫什么", "我的背景", "心情怎么样", personal info queries) → route to **chatbot** (it can read memory + vault to answer)
 - For anything else (conversation, Q&A, recommendations, queries) → route to **chatbot**
 
 ## User input:
@@ -136,19 +138,53 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
     # 创建 Trace
     trace = TraceRecord(route, text[:100])
     state["run_id"] = trace.trace_id
+    from ..trace import set_current_trace
+    set_current_trace(trace)
 
     try:
         trace.start()
 
         if route == "plan":
             # 判断是 task 操作还是每日计划
-            task_kw = ["todo", "task", "待办", "添加", "删除", "删掉",
-                       "新建", "创建", "改成", "拆成", "拆分", "merge",
-                       "合并", "标记", "状态", "强制"]
+            # 注意：有些词（todo/task/计划）在"读取参考"和"执行操作"时都会出现
+            # 需要区分：包含"生成计划/写计划/明天的计划" = 计划生成，不归 task_ops
             text_lower = text.lower()
-            is_task_op = any(kw in text_lower for kw in task_kw)
 
-            if is_task_op:
+            # 计划生成关键词（走 plan_graph 而非 task_ops）
+            plan_keywords = ["生成.*计划", "写.*计划", "明天的计划", "今日计划",
+                             "daily plan", "今天的计划"]
+            is_plan_request = False
+            import re
+            for pk in plan_keywords:
+                if re.search(pk, text_lower):
+                    is_plan_request = True
+                    break
+
+            # 任务操作关键词（走 task_ops）
+            task_action_kw = ["添加", "删除", "删掉", "新建", "改成",
+                              "拆成", "拆分", "merge", "合并", "标记",
+                              "状态", "强制", "截止日期", "拆分"]
+            is_task_op = any(kw in text_lower for kw in task_action_kw)
+
+            if is_plan_request and not is_task_op:
+                # 明确是生成计划，关键词'Todo'只是参考数据
+                logger.info("plan.run", step="📋 读取日记和记忆并生成计划...")
+                r = run_plan_graph(user_id=user_id)
+                items = r.get("items", [])
+                state["result_data"] = r
+                if r.get("success"):
+                    lines = [f"📋 今日计划 ({r.get('date', '')})\n"]
+                    for i, item in enumerate(items, 1):
+                        src = item.get("source", "")
+                        icon = {"diary_todo": "📓", "pending_task": "🔄", "signal": "📡",
+                                "stable_profile": "🎯", "default": "•"}.get(src, "•")
+                        lines.append(f"  {i}. {icon} [{item.get('priority', 'MEDIUM')}] {item.get('title', '')}")
+                    state["result"] = "\n".join(lines)
+                    logger.info("plan.complete", step=f"✅ 计划生成完成，共 {len(items)} 项")
+                else:
+                    state["result"] = f"❌ 生成计划失败: {r.get('error', '')}"
+                    logger.error("plan.failed", error=r.get('error', ''))
+            elif is_task_op:
                 logger.info("plan.task_ops", step="📋 执行任务操作...")
                 from .plan_graph import run_task_ops
                 r = run_task_ops(user_input=text, user_id=user_id)
@@ -254,6 +290,7 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
         trace.error = error_msg
 
     finally:
+        set_current_trace(None)
         trace.stop()
         trace.save()
 

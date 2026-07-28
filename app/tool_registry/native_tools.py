@@ -71,6 +71,46 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         handler=_read_file,
     ))
 
+    # ── vault 写工具（HITL 审批） ──
+
+    def _vault_append(**kw: Any) -> str:
+        return vault.append_to_file(**kw)
+
+    registry.register_native(RegisteredTool(
+        name="vault_append",
+        description="向 Obsidian 笔记文件追加内容（需人工审批）",
+        schema_={
+            "type": "object",
+            "properties": {
+                "rel_path": {"type": "string", "description": "相对路径, 如 diaries/2026-07-28.md"},
+                "content": {"type": "string", "description": "要追加的内容"},
+            },
+            "required": ["rel_path", "content"],
+        },
+        source="native", server_name=None,
+        risk_level="high", side_effects=["修改 Obsidian 文件"],
+        handler=_vault_append,
+    ))
+
+    def _vault_write(**kw: Any) -> str:
+        return vault.write_file(**kw)
+
+    registry.register_native(RegisteredTool(
+        name="vault_write",
+        description="覆盖写入 Obsidian 笔记文件（需人工审批）",
+        schema_={
+            "type": "object",
+            "properties": {
+                "rel_path": {"type": "string", "description": "相对路径"},
+                "content": {"type": "string", "description": "完整文件内容"},
+            },
+            "required": ["rel_path", "content"],
+        },
+        source="native", server_name=None,
+        risk_level="high", side_effects=["覆盖修改 Obsidian 文件"],
+        handler=_vault_write,
+    ))
+
     # ── agent_data 读写工具 ──
 
     from app.agent import agent_data_service as ads

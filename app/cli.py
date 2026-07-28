@@ -302,11 +302,20 @@ def cmd_eval():
       agent eval --tier exploratory     — exploratory
       agent eval --tier candidate       — candidate
       agent eval --all                  — 所有层级合并
+      agent eval --score               — 评分卡（不跑测试集，只打分布分析）
     """
     from app.agent.trace import load_test_cases, run_benchmark_suite
 
     flags = set(sys.argv[2:])
     use_llm = "--llm" in flags
+    use_score = "--score" in flags
+
+    if use_score:
+        from app.agent.scorecard import run_scorecard, format_scorecard
+        print("📊 正在分析 Agent 评分卡...\n")
+        report = run_scorecard()
+        print(format_scorecard(report))
+        return
 
     if "--all" in flags:
         tier = "all"
@@ -436,6 +445,7 @@ def print_help():
     reflect <内容>        反思分析
     memory <内容>         保存到长期记忆
     eval [--tier golden|challenge|exploratory|candidate]  运行测试集（默认 golden regression）
+    eval --score                                          多维评分卡（不跑测试）
     eval --all                                            所有层级
     eval --tier golden --llm                              带 LLM Grader
     ui                   启动终端 UI

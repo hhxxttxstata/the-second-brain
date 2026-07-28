@@ -277,6 +277,15 @@ class ToolRegistry:
 
         start = time.monotonic()
         try:
+            # HITL 审批检查：高风险工具在执行前弹确认框
+            risk_level = tool.risk_level if hasattr(tool, 'risk_level') else 'low'
+            if risk_level == "high" or name in ("vault_append", "vault_write"):
+                from app.agent.confirmation import confirm_pending
+                ok = confirm_pending()
+                if not ok:
+                    logger.info("tool_rejected_by_user", tool=name)
+                    return {"success": False, "error": "用户拒绝了此操作"}
+
             if tool.source == "native":
                 result = tool.handler(**params)
             elif tool.source == "mcp" and tool.server_name:
@@ -297,6 +306,26 @@ class ToolRegistry:
                 risk_level=tool.risk_level,
                 timestamp=__import__("datetime").datetime.now().isoformat(),
             ))
+
+            # 自动记录到当前 trace
+            try:
+                from app.agent.trace import get_current_trace
+                ct = get_current_trace()
+                if ct is not None:
+                    ct.add_tool_call(
+                        name=name, params=params,
+                        result_summary=result_text,
+                        latency_ms=latency, success=True,
+                    )
+                    # memory 工具额外触发记忆更新记录
+                    if name in ("write_memory", "update_task_status"):
+                        ct.add_memory_update(
+                            "tool_action",
+                            f"{name}: {str(params.get('content', params.get('task_title', '')))[:60]}",
+                        )
+            except Exception:
+                pass
+
             return {"success": True, "result": result}
 
         except Exception as exc:

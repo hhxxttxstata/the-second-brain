@@ -33,6 +33,20 @@ def _ensure_dir() -> Path:
 # TraceRecord — 单次 Agent 运行的完整记录
 # ---------------------------------------------------------------------------
 
+# 全局当前 trace（用于自动记录工具调用和记忆写入，避免在子 agent 内部传参）
+_current_trace: "TraceRecord | None" = None
+
+
+def set_current_trace(trace: "TraceRecord | None") -> None:
+    """设置/清除当前 agent 运行的 trace 引用。"""
+    global _current_trace
+    _current_trace = trace
+
+
+def get_current_trace() -> "TraceRecord | None":
+    return _current_trace
+
+
 class TraceRecord:
     """Agent 运行的完整轨迹。"""
 
@@ -228,8 +242,10 @@ def load_test_cases(tier: str | None = None,
         "challenge": ["challenge/*.json"],
         "exploratory": ["exploratory/*.json"],
         "candidate": ["candidate/*.json"],
+        "heldout": ["heldout/*.json"],
         "all": ["golden/*.json", "challenge/*.json",
-                 "exploratory/*.json", "candidate/*.json"],
+                 "exploratory/*.json", "candidate/*.json",
+                 "heldout/*.json"],
     }
 
     globs = TIER_MAP.get(tier)

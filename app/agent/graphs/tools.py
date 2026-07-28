@@ -119,11 +119,11 @@ def build_agent_tools() -> list:
         schema = t_info.get("input_schema", {})
         source = "MCP" if "[MCP/" in description else "native"
 
-        # 生成适配器函数（延迟执行）
-        async def _make_fn(t_name: str = name, t_desc: str = description):
-            async def fn(**kwargs: Any) -> str:
+        # 同步适配器函数 — 由 StructuredTool 同步执行
+        def _make_sync_fn(t_name: str = name, t_desc: str = description):
+            def fn(**kwargs: Any) -> str:
                 try:
-                    result = await registry.execute(t_name, kwargs)
+                    result = asyncio.run(execute_tool(t_name, kwargs))
                     if result.get("success"):
                         r = result.get("result", "")
                         return str(r) if not isinstance(r, str) else r
@@ -137,9 +137,9 @@ def build_agent_tools() -> list:
             return fn
 
         try:
-            fn = asyncio.run(_make_fn())
+            sync_fn = _make_sync_fn()
             lc_tools.append(StructuredTool.from_function(
-                func=fn,
+                func=sync_fn,
                 name=name,
                 description=description,
                 args_schema=None,
