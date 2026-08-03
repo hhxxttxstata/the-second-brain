@@ -1,6 +1,6 @@
-# 🤖 个人知识 Agent — Obsidian 原生版
+# 🤖 个人知识 Agent — 你的第二大脑
 
-一个以 **Obsidian vault 为知识库 + SQLite 为运行数据**的个人知识 Agent。所有笔记、日记、兴趣、计划……全是 `.md` 文件。
+一个以 **Obsidian vault 为知识库 + SQLite 为运行数据**的个人知识 Agent。obsidian天然以Markdown格式存储文件，你可以在obsidian记录下所有想记录的内容，这个agent会将这些内容作为知识资产，所有你就有了一个“自增长的知识库+十分了解你的专属助手agent”。
 
 **不是查数据库 → 不是向量检索 → 不是混合搜索 → 直接读文件 + 拼上下文 + 交给 LLM。**
 
