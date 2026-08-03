@@ -35,5 +35,9 @@ class Settings(BaseSettings):
     feishu_bot_name: str = "Agent助手"
     notify_webhook_url: str | None = None
 
+    # 医疗 RAG 服务（Pulmonary_embolism_system）
+    medical_rag_url: str = "http://127.0.0.1:8001"
+    medical_rag_api_key: str | None = None
+
 
 settings = Settings()

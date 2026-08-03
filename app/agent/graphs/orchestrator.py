@@ -68,6 +68,7 @@ input and route it to the correct sub-agent.
 - If the user says "analyze", "reflect", "反思" → route to **reflect**
 - If the user says "plan", "今日计划", "daily plan" → route to **plan**
 - If the user asks "please write", "save this", "remember", "记忆" → route to **memory**
+- **If the user asks about MEDICAL topics** (肺栓塞, CTPA, 深静脉血栓, 抗凝, 医学文献, PE, D-dimer, 肺动脉) → route to **chatbot** (it has medical_rag_query / medical_pe_diagnosis tools to answer from the medical knowledge base)
 - **If the user is UPDATING or CORRECTING a previously-saved memory** ("我之前说...现在改了", "以前是...现在改成", "改成", "以后都", "更正", "更新一下"), and the input is primarily about personal facts/habits/preferences → route to **memory** (it detects conflicts and supersedes old memories)
 - If the user asks questions about themselves ("我叫什么", "我的背景", "心情怎么样", personal info queries) → route to **chatbot** (it can read memory + vault to answer)
 - **If the input is primarily a conversation / question / status update / complaint, but ALSO contains a small memory instruction (e.g. "对了...你记一下", "以后...都", "我换了...")** → route to **chatbot** (it can write memory from within conversation). Memory instructions embedded in conversation do NOT require routing to memory. Only route to memory when the ENTIRE input is a memory-save request.
