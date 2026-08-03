@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-07-23T15:59:20.506504",
+  "vault": {
+    "status": "✅",
+    "file_count": 31,
+    "total_chars": 24884,
+    "total_tokens_est": 6221,
+    "folders": {
+      "": 2,
+      "Clippings": 4,
+      "diaries": 6,
+      "habbits": 7,
+      "notes": 7,
+      "知识沉淀": 2,
+      "Agent系统设计": 1,
+      "RAG技术": 1,
+      "项目对比": 1
+    }
+  },
+  "memory": {
+    "status": "✅",
+    "memory_count": 6,
+    "detail": {
+      "profile_fields": [
+        "name",
+        "time"
+      ],
+      "profile_field_count": 2,
+      "episodic_entries": 3,
+      "episodic_range": "2026-07-23 ~ 2026-07-23",
+      "pending_tasks": 1,
+      "history_plans": 0
+    }
+  },
+  "traces": {
+    "status": "✅",
+    "trace_count": 4,
+    "today_traces": 4,
+    "by_type": {
+      "reflect": 1,
+      "memory": 3
+    }
+  },
+  "tools": {
+    "status": "✅",
+    "tool_count": 12,
+    "tools": [
+      "search_vault",
+      "read_folder",
+      "read_file",
+      "get_user_profile",
+      "vault_structure",
+      "read_memory",
+      "write_episodic_memory",
+      "update_task_status",
+      "get_today_state",
+      "get_fund_data",
+      "get_github_trending",
+      "get_ai_news"
+    ],
+    "layers": {
+      "vault_readonly": [
+        "search_vault",
+        "read_folder",
+        "read_file",
+        "get_user_profile",
+        "vault_structure"
+      ],
+      "agent_data_rw": [
+        "read_memory",
+        "write_episodic_memory",
+        "update_task_status",
+        "get_today_state"
+      ],
+      "external": [
+        "get_fund_data",
+        "get_github_trending",
+        "get_ai_news"
+      ]
+    }
+  },
+  "context_quality": {
+    "status": "✅",
+    "context_chars": 352,
+    "context_tokens_est": 88,
+    "source_count": 3,
+    "source_layers": [
+      "agent_data/episodic",
+      "agent_data/stable_profile",
+      "agent_data/task"
+    ]
+  },
+  "overall_score": 100.0,
+  "issues": [],
+  "latency_ms": 56
+}

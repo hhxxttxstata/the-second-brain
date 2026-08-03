@@ -1,0 +1,123 @@
+[
+  {
+    "intent": "互联网搜索",
+    "input": "帮我搜一下2025年AI应用开发秋招要求",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route"
+    ],
+    "note": "依赖外部 API，结果不稳定，延迟波动大（上次 31s），不进 golden",
+    "required_outcomes": [
+      "路由到 chatbot"
+    ],
+    "fixture_needed": {},
+    "ablation_trigger": "外部 API 不可用时应有 fallback 而非报错",
+    "tags": [
+      "routing",
+      "vault_search",
+      "external_api"
+    ],
+    "id": "routing-帮我搜一下2025年AI应用开发",
+    "created_at": "2026-07-26",
+    "substage": null
+  },
+  {
+    "intent": "模糊记忆搜索",
+    "input": "帮我找一下前几天记的那件事，就是关于我心情不太好的那段。",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route"
+    ],
+    "note": "模糊语义，不同评测可能搜到不同内容，用于发现记忆检索缺陷",
+    "required_outcomes": [
+      "路由到 chatbot"
+    ],
+    "fixture_needed": {
+      "memory": "需有情绪相关的记忆条目"
+    },
+    "ablation_trigger": "触发检索退化——模糊查询返回'没找到'而非近似匹配",
+    "tags": [
+      "routing",
+      "memory_write",
+      "ambiguous"
+    ],
+    "id": "routing-帮我找一下前几天记的那件事，就是",
+    "created_at": "2026-07-26",
+    "substage": null
+  },
+  {
+    "intent": "开放总结",
+    "input": "总结我 Obsidian 里关于秋招的日记。",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route"
+    ],
+    "note": "依赖 vault 内容，输出会漂移，不能自动化检查内容质量",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "输出是总结形式而非逐条罗列"
+    ],
+    "fixture_needed": {
+      "vault": "需有秋招相关日记"
+    },
+    "ablation_trigger": "vault 内容变更时回答质量退化",
+    "tags": [
+      "routing",
+      "vault_search"
+    ],
+    "id": "routing-总结我 Obsidian 里关于",
+    "created_at": "2026-07-26",
+    "substage": null
+  },
+  {
+    "intent": "对话上下文联引",
+    "input": "你还记得我刚才说我要去 Obsidian 里写一篇关于秋招的日记吗？",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route"
+    ],
+    "note": "跨轮依赖，单条无法重现，用于发现上下文丢失缺陷",
+    "required_outcomes": [
+      "路由到 chatbot"
+    ],
+    "fixture_needed": {},
+    "ablation_trigger": "跨轮上下文丢失——无法引用同轮对话内容",
+    "tags": [
+      "routing",
+      "vault_search",
+      "ambiguous"
+    ],
+    "id": "routing-你还记得我刚才说我要去 Obsi",
+    "created_at": "2026-07-26",
+    "substage": null
+  },
+  {
+    "intent": "混合闲聊+指令",
+    "input": "今天天气真不错，我早上吃了煎饼果子，然后突然想到一件事。对了，我记得 Obsidian 是只读的对吧？不管了，你帮我看看我最近的日记里有没有提到下周的安排？",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route"
+    ],
+    "note": "超长混合输入，用于发现 intent 提取缺陷",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "正确识别核心指令（搜索日记中的下周安排）而非纠缠闲聊部分"
+    ],
+    "fixture_needed": {
+      "vault": "需有近期日记"
+    },
+    "ablation_trigger": "长混合输入中意图提取退化——被闲聊部分干扰",
+    "tags": [
+      "routing",
+      "vault_search"
+    ],
+    "id": "routing-今天天气真不错，我早上吃了煎饼果",
+    "created_at": "2026-07-26",
+    "substage": null
+  }
+]

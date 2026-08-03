@@ -52,45 +52,30 @@ def _check_vault_health() -> dict[str, Any]:
 
 
 def _check_memory_health() -> dict[str, Any]:
-    agent_data = settings.agent_data_dir
-    memory_dir = agent_data / "memory"
-    if not memory_dir.exists():
-        return {"status": "⚠️", "memory_count": 0, "note": "memory 目录不存在"}
+    """检查记忆健康度（基于 SQLite）。"""
+    try:
+        from .memory_store import get_stats, get_profile, get_all_todos
+        stats_data = get_stats()
+        profile = get_profile()
+        todos = get_all_todos()
 
-    stats: dict[str, Any] = {"status": "✅", "memory_count": 0, "detail": {}}
-    for fname in ["profile.json", "episodic.json", "task_memory.json"]:
-        fp = memory_dir / fname
-        if not fp.exists():
-            stats["detail"][fname] = "不存在"
-            continue
-        try:
-            data = json.loads(fp.read_text(encoding="utf-8"))
-            if fname == "episodic.json":
-                entries = data.get("entries", [])
-                stats["detail"]["episodic_entries"] = len(entries)
-                if entries:
-                    oldest = entries[0].get("timestamp", "")[:10]
-                    newest = entries[-1].get("timestamp", "")[:10]
-                    stats["detail"]["episodic_range"] = f"{oldest} ~ {newest}"
-            elif fname == "profile.json":
-                fields = [k for k in data if not k.startswith("__")]
-                stats["detail"]["profile_fields"] = fields
-                stats["detail"]["profile_field_count"] = len(fields)
-            elif fname == "task_memory.json":
-                todos = data.get("todos", [])
-                history = data.get("history", [])
-                stats["detail"]["pending_tasks"] = len(todos)
-                stats["detail"]["history_plans"] = len(history)
-        except Exception as e:
-            stats["detail"][fname] = f"解析错误: {e}"
+        detail: dict[str, Any] = {}
+        for k, v in stats_data.items():
+            if isinstance(v, int):
+                detail[k] = v
 
-    # 总量评分
-    total_entries = 0
-    for v in stats["detail"].values():
-        if isinstance(v, int):
-            total_entries += v
-    stats["memory_count"] = total_entries
-    return stats
+        if profile:
+            fields = [k for k in profile if not k.startswith("_")]
+            detail["profile_fields"] = fields
+            detail["profile_field_count"] = len(fields)
+
+        if todos:
+            detail["pending_tasks"] = len(todos)
+
+        total = sum(v for v in detail.values() if isinstance(v, int))
+        return {"status": "✅", "memory_count": total, "detail": detail}
+    except Exception as exc:
+        return {"status": "⚠️", "memory_count": 0, "error": str(exc)}
 
 
 def _check_trace_health() -> dict[str, Any]:
@@ -168,7 +153,8 @@ def _check_context_quality() -> dict[str, Any]:
     """检查 build_context 的丰富度。"""
     from app.agent.agent_data_service import build_context
 
-    ctx = build_context(task="检查上下文质量", max_tokens=3000)
+    ctx = build_context(task="检查上下文质量", max_tokens=3000,
+                          session_id="self_eval")
     sources = ctx.get("sources", [])
     context_text = ctx.get("context", "")
 
@@ -228,8 +214,8 @@ def run_self_eval() -> dict[str, Any]:
     ctx_source_count = report["context_quality"].get("source_count", 0)
     if ctx_source_count < 2:
         issues.append(f"context 仅 {ctx_source_count} 个来源，建议丰富记忆层")
-    if "profile.json" in report["memory"].get("detail", {}):
-        issues.append("profile.json 未初始化，agent 没有你的画像记忆")
+    if not report["memory"].get("detail", {}).get("profile_fields"):
+        issues.append("用户画像未初始化，agent 没有你的画像记忆")
 
     report["issues"] = issues
     report["latency_ms"] = int((time.monotonic() - start) * 1000)

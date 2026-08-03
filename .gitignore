@@ -22,7 +22,8 @@ node_modules/
 Thumbs.db
 
 # Agent data (runtime) — 包含个人记忆，不提交
-agent_data/
+agent_data/*
+!agent_data/eval/
 
 # MCP
 langgraph-main/

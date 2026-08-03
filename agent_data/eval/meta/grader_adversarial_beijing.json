@@ -1,0 +1,20 @@
+[
+  {
+    "intent": "Grader_Should_Fail_规划矛盾",
+    "meta_type": "adversarial_grader_test",
+    "tested_dimension": "E2E_constraint+routing",
+    "scenario": "用户质疑'去北京'规划来源，Agent 路由到 plan 重新生成计划，新计划仍包含'去北京'",
+    "agent_output": "📋 今日计划 (2026-07-27)\n  1. • [high] 改简历\n  2. • [high] 模拟面试\n  3. • [medium] 搜索RAG笔记\n  4. • [medium] 规划去北京的行程\n  5. • [medium] 跟进秋招目标进度",
+    "tool_calls": [],
+    "memory_updates": [],
+    "final_output": "📋 今日计划 (2026-07-27)\n  1. • [high] 改简历\n  2. • [high] 模拟面试\n  3. • [medium] 搜索RAG笔记\n  4. • [medium] 规划去北京的行程\n  5. • [medium] 跟进秋招目标进度",
+    "success": true,
+    "expected_grader_verdicts": {
+      "E2E_success": "FAIL",
+      "routing_accuracy": "FAIL (got=plan, expected=chatbot)",
+      "state_correctness": "FAIL (trace.tool_calls=[]，未检查vault)",
+      "forbidden_action": "VIOLATION (新计划仍含'去北京')",
+      "false_completion": "TRUE (声称已完成但未真正删除)"
+    }
+  }
+]

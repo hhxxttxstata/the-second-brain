@@ -65,7 +65,8 @@ def gather_node(state: PlanState) -> PlanState:
     logger.info("plan.gather", step="📖 读取用户画像和记忆...")
     # agent_data 记忆
     state["profile_text"] = format_profile()
-    state["agent_context"] = build_context(task="daily plan", max_tokens=2000)["context"]
+    state["agent_context"] = build_context(task="daily plan", max_tokens=2000,
+                                            session_id="plan_graph")["context"]
 
     # vault 日记（只读）
     logger.info("plan.gather", step=f"📖 读取今日日记 ({today}.md)...")
@@ -171,10 +172,24 @@ def commit_node(state: PlanState) -> dict:
 
     logger.info("plan.commit", step=f"💾 保存计划结果共 {len(items)} 项...")
 
-    # 写入 agent_data/memory/task_memory.json
+    # 写入 SQLite（通过 agent_data_service）
     task_data = read_memory("task")
     if "history" not in task_data:
         task_data["history"] = []
+
+    # 去重：同一天已有相同 items 的 plan 不重复追加
+    title_set = frozenset(it.get("title", "") for it in items)
+    is_dup = False
+    for existing in task_data["history"][-5:]:
+        if (existing.get("date") == today
+                and not existing.get("plan_id", "").startswith("taskop")
+                and frozenset(it.get("title", "") for it in existing.get("items", [])) == title_set):
+            is_dup = True
+            break
+    if is_dup:
+        logger.info("plan.commit.skipped", step="⏭️ 跳过重复计划（今日已有相同项）")
+        return {"success": True, "items": items, "plan_id": plan_id, "skipped": True}
+
     task_data["history"].append({
         "plan_id": plan_id, "date": today,
         "summary": f"{len(items)} items",
@@ -395,14 +410,25 @@ def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, An
     # 写回
     if changes:
         task_data["todos"] = _deduplicate_todos(todo_list)
+
+        # 防止同一天同内容 taskop 重复
+        is_taskop_dup = False
+        if "history" in task_data and task_data["history"]:
+            last = task_data["history"][-1]
+            if (last.get("plan_id", "").startswith("taskop")
+                    and last.get("date") == date.today().isoformat()
+                    and last.get("summary") == "; ".join(changes)):
+                is_taskop_dup = True
+
         if "history" not in task_data:
             task_data["history"] = []
-        task_data["history"].append({
-            "plan_id": f"taskop_{uuid.uuid4().hex[:8]}",
-            "date": date.today().isoformat(),
-            "summary": "; ".join(changes),
-            "items": [{"title": c, "priority": "medium", "description": c, "source": "task_op"} for c in changes],
-        })
+        if not is_taskop_dup:
+            task_data["history"].append({
+                "plan_id": f"taskop_{uuid.uuid4().hex[:8]}",
+                "date": date.today().isoformat(),
+                "summary": "; ".join(changes),
+                "items": [{"title": c, "priority": "medium", "description": c, "source": "task_op"} for c in changes],
+            })
         write_memory("task", task_data, merge=False)
         add_episodic(f"任务操作: {'; '.join(changes)}", tags=["task_op"])
         logger.info("plan.task_ops.done", step=f"✅ 任务操作完成: {'; '.join(changes)}")

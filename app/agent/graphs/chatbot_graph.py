@@ -1,10 +1,10 @@
-"""Chatbot Agent — 两层上下文架构。
+"""Chatbot Agent — 两层上下文架构 + 跨会话延续。
 
 流程:
-1. gather_context → 合并 agent_data 记忆 + vault 知识 → 注入 system prompt
+1. gather_context → 合并 agent_data 记忆 + vault 知识 + 待审批操作 → 注入 system prompt
 2. llm → tools? → done
 
-改进: 每轮对话重新注入最新的上下文（缺陷三修复），而不是复用旧的 SystemMessage。
+改进: 每轮对话重新注入最新的上下文 + 待审批延续（P0 修复）。
 """
 from __future__ import annotations
 
@@ -26,11 +26,15 @@ _last_context_ts: str = ""
 _last_context_cache: str = ""
 
 
-def _build_system_prompt(task: str = "", trace: Any = None) -> str:
-    """构建 system prompt，含最新上下文。"""
+def _build_system_prompt(task: str = "", trace: Any = None,
+                          session_id: str = "") -> str:
+    """构建 system prompt，含分层上下文 + 待审批延续。"""
     global _last_context_ts, _last_context_cache
 
-    ctx = build_context(task=task)
+    ctx = build_context(task=task, session_id=session_id)
+
+    # 追踪 manifest
+    manifest = ctx.get("manifest", {})
 
     # 记录 trace 上下文
     if trace:
@@ -39,22 +43,56 @@ def _build_system_prompt(task: str = "", trace: Any = None) -> str:
                 s.get("layer", "?"), s.get("type", "?"),
                 len(ctx.get("context", "")),
             )
+        # 记录 manifest
+        if manifest:
+            trace.context_sources.append({
+                "layer": "observability",
+                "type": "context_manifest",
+                "chars": 0,
+                "preview": str(manifest)[:200],
+            })
 
     return f"""{ctx['context']}
 
 You are the user's personal AI agent. You have tools to read vault notes, write memory, and query external data.
 
 ## Architecture (two layers):
-- **vault/** (D:/MYWORLD) — the user's knowledge base (.md notes/diaries). Read-only for you.
+- **vault/** (D:/MYWORLD) — the user's knowledge base (.md notes/diaries). Read+write for you.
 - **agent_data/** — your own runtime data (memories, tasks, traces). Read/write as needed.
 
-## Tools available:
+## Conversation continuity rules:
+- If the user says "同意", "好", "就按这个来", "ok", "go ahead", "可以", "yes",
+  or otherwise **confirms or agrees** to a proposal YOU made in your previous message
+  — **immediately execute that proposal**. Do NOT re-analyze, re-summarize, or ask again.
+  The user already approved; just do it.
+- If you see a **## 待审批操作** section above: these are actions pending from a
+  previous session. If the user agrees, execute them.
+- **Vault write rules**: vault_write and vault_append no longer require user approval.
+  You are free to read and write vault files as needed.
+  But be careful with deletion — prefer to keep original content when in doubt.
+  You may rephrase sentences for clarity and logical flow.
+- If the user says "不是" / "不对" / "我哪里说过" — they are **disputing** something
+  in memory or vault. Read vault and memory to verify before correcting yourself.
+- If the user asks "刚才说的什么" / "你记得吗" — refer to the conversation history
+  in the messages (preceding this prompt), NOT just the memory layer.
+- The **## 系统策略** section above contains binding rules. Follow them before all else.
+
+## Tools available: search_topic_memory, read_topic_memory, write_topic_memory — manage MEMORY.md indexed memories
 - search_vault / read_folder / read_file — search the knowledge base
-- write_episodic_memory / read_memory — manage memories
+- search_memories — search SQLite memories
+- write_episodic_memory / read_memory — manage episodic memories
 - update_task_status / get_today_state — manage tasks
 - get_fund_data / get_github_trending / get_ai_news — external data
 
-Think naturally, answer naturally. Use tools when helpful."""
+Think naturally, answer naturally. Use tools when helpful.
+
+## Important rules:
+- If a tool returns empty or fails, tell the user honestly: say "I couldn't find anything" or "the tool returned an error". Do NOT make up or guess content.
+- If you read a file and it has actual content, describe what it says. If the file is empty or doesn't exist, say so. Do NOT claim content is "blank" if it isn't.
+- Never claim a tool had "parameter problems" unless you called it and saw an actual error message.
+- Base your answers on actual tool results, not on what you assume the vault contains.
+- **Memory write precision**: when the user mentions a TEMPORARY state (headache, tiredness, being busy, mood) that only affects THIS conversation, do NOT save it as a long-term preference. Only save STABLE preferences ("以后都", "默认", "习惯用"). A temporary condition like "今天头痛" does not make "头痛时回复简短" a durable preference — at most apply it to the current session without persisting. However, DO still save genuine stable preferences stated in the same message (e.g. "以后所有的代码示例都默认用 Python" IS a durable preference — write it). Save stable preferences, skip temporary states.
+- **Always persist stable preferences with a tool call**: when the user states a durable preference ("以后都", "默认", "记住"), ACTUALLY call write_memory / write_topic_memory / search_memories to persist it. Saying "I've remembered it" in text WITHOUT calling the tool is a false completion — never claim you saved something you didn't."""
     # fmt: on
 
 

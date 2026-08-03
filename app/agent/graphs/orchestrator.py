@@ -68,7 +68,9 @@ input and route it to the correct sub-agent.
 - If the user says "analyze", "reflect", "反思" → route to **reflect**
 - If the user says "plan", "今日计划", "daily plan" → route to **plan**
 - If the user asks "please write", "save this", "remember", "记忆" → route to **memory**
+- **If the user is UPDATING or CORRECTING a previously-saved memory** ("我之前说...现在改了", "以前是...现在改成", "改成", "以后都", "更正", "更新一下"), and the input is primarily about personal facts/habits/preferences → route to **memory** (it detects conflicts and supersedes old memories)
 - If the user asks questions about themselves ("我叫什么", "我的背景", "心情怎么样", personal info queries) → route to **chatbot** (it can read memory + vault to answer)
+- **If the input is primarily a conversation / question / status update / complaint, but ALSO contains a small memory instruction (e.g. "对了...你记一下", "以后...都", "我换了...")** → route to **chatbot** (it can write memory from within conversation). Memory instructions embedded in conversation do NOT require routing to memory. Only route to memory when the ENTIRE input is a memory-save request.
 - For anything else (conversation, Q&A, recommendations, queries) → route to **chatbot**
 
 ## User input:
@@ -92,7 +94,15 @@ input and route it to the correct sub-agent.
 
 def supervisor_node(state: OrchestratorState) -> OrchestratorState:
     """LLM 决定路由。"""
-    conv_text = "\n".join(state.get("conversation", [])[-5:]) or "(none)"
+    # conversation 可能是 list[str]（旧格式）或 list[dict]（新格式）
+    raw_conv = state.get("conversation", []) or []
+    if raw_conv and isinstance(raw_conv[0], dict):
+        conv_text = "\n".join(
+            f"{t.get('role', '?')}: {t.get('content', '')[:200]}"
+            for t in raw_conv[-5:]
+        ) or "(none)"
+    else:
+        conv_text = "\n".join(str(t)[:200] for t in raw_conv[-5:]) or "(none)"
 
     logger.info("orchestrator.supervisor", msg="分析用户意图，决定路由...")
     prompt = SUPERVISOR_PROMPT.format(
@@ -247,13 +257,12 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
 
         else:  # chatbot
             logger.info("chatbot.run", step=f"💬 构建上下文并回答: {text[:60]}...")
-            # 用 chatbot_graph 运行对话
             from .chatbot_graph import build_chatbot_graph
-            from langchain_core.messages import HumanMessage
+            from langchain_core.messages import HumanMessage, AIMessage
             from ..agent_data_service import build_context
 
-            # 先构建上下文并记录到 trace（缺陷八修复）
-            ctx = build_context(task=text)
+            # 先构建上下文并记录到 trace
+            ctx = build_context(task=text, session_id=state.get("run_id", ""))
             for s in ctx.get("sources", []):
                 trace.add_context_source(
                     s.get("layer", "?"), s.get("type", "?"),
@@ -261,11 +270,71 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
                 )
 
             graph = build_chatbot_graph()
-            # 用 orchestrator 的 thread_id 加后缀，保证连续对话共享同一 checkpoint
+
+            # 构造消息列表：注入历史对话（来自持久化会话）+ 当前输入
+            messages: list = []
+            conv = state.get("conversation", [])
+            if conv:
+                # ── Context Pressure Monitor: 历史超预算时自动压缩 ──
+                try:
+                    from ..context_pressure import (
+                        measure_pressure, compress_history, format_pressure_line,
+                    )
+                    press = measure_pressure(history=conv)
+                    if press["level"] in ("yellow", "red"):
+                        compressed = compress_history(
+                            conv, session_id=state.get("run_id", ""))
+                        logger.info("context.pressure",
+                                    step=format_pressure_line(press),
+                                    compressed=len(compressed) < len(conv),
+                                    turns=f"{len(conv)}→{len(compressed)}")
+                        conv = compressed
+                        press["compressed"] = len(compressed) < len(conv)
+                        # 记录到 trace
+                        try:
+                            trace.context_sources.append({
+                                "layer": "observability",
+                                "type": "context_pressure",
+                                "chars": 0,
+                                "preview": format_pressure_line(press),
+                            })
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                for turn in conv:
+                    if isinstance(turn, dict):
+                        role = turn.get("role", "")
+                        content = turn.get("content", str(turn))
+                    else:
+                        # conversation 传进来是旧 dict 格式
+                        # format: {"role": "human"|"ai", "content": "..."}
+                        # 但旧代码可能传的是 list[str]
+                        try:
+                            content = str(turn)
+                            role = "human"
+                        except Exception:
+                            continue
+
+                    if role == "human" or role == "user":
+                        messages.append(HumanMessage(content=content))
+                    elif role == "ai" or role == "assistant":
+                        # 历史 AI 回答太长时截断后半段（保留开头包含分析/方案的部分）
+                        if len(content) > 1200:
+                            # 保留前 800 字（含方案）+ 最后 400 字（含结论）
+                            content = content[:800] + "\n\n...(省略中间)...\n\n" + content[-400:]
+                        messages.append(AIMessage(content=content))
+                    else:
+                        messages.append(HumanMessage(content=content))
+
+            messages.append(HumanMessage(content=text))
+
+            # 用 run_id 做 thread_id，保证 LangGraph MemorySaver 同一会话
             chat_thread = f"orch_chat_{state.get('run_id', uuid.uuid4().hex[:10])}"
             config = {"configurable": {"thread_id": chat_thread}}
             response = graph.invoke(
-                {"messages": [HumanMessage(content=text)]},
+                {"messages": messages},
                 config,
             )
             last_msg = response["messages"][-1]

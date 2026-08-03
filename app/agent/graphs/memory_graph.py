@@ -45,14 +45,23 @@ DECIDE_PROMPT = """Evaluate this input for memory-worthiness.
 
 ## Decision: "write" (worth remembering) | "skip" (trivial/chat)
 
+## Memory types:
+- "episodic" — an event, experience, or fact
+- "task" — a todo / task to do
+- "profile" — a personal attribute or preference (e.g. habit, phone number, taste)
+- "semantic_knowledge" — a distilled conclusion / reusable standard / decision outcome
+  (use when the user asks to SUMMARIZE a discussion or CONCLUSION and record it as reference knowledge:
+   "总结一下...记下来", "提炼结论", "作为知识库/标准/规范", "以后新项目参考")
+
 ## Output — JSON:
-{{"decision":"write|skip","reason":"why","type":"episodic|task|profile","content_memory":"the key info to remember in 1-2 sentences"}}
+{{"decision":"write|skip","reason":"why","type":"episodic|task|profile|semantic_knowledge","content_memory":"the key info to remember in 1-2 sentences (for semantic_knowledge: include the distilled standard/conclusion, NOT 'user asked me to summarize')"}}
 """
 
 
 def decide_node(state: MemoryAgentState) -> MemoryAgentState:
     logger.info("memory.decide", step="🧠 判断是否值得记忆...")
-    ctx = build_context(task=state.get("trigger_text", ""), max_tokens=1000)
+    ctx = build_context(task=state.get("trigger_text", ""), max_tokens=1000,
+                         session_id="memory_graph")
     prompt = DECIDE_PROMPT.format(
         trigger_text=state.get("trigger_text", ""),
         context=ctx["context"][:2000],
@@ -85,8 +94,14 @@ def decide_node(state: MemoryAgentState) -> MemoryAgentState:
 
 def write_node(state: MemoryAgentState) -> MemoryAgentState:
     if state.get("decision") not in ("write", "update"):
-        logger.info("memory.write.skip", step="⏭️ 无需写入")
-        return {**state, "summary": "(skipped)", "success": True}
+        reason = state.get("decision_reason", "")
+        if reason:
+            # skip 时给出说明性输出（如'目标已存在'），而非空串
+            summary = f"⏭️ 无需重复记忆: {reason[:120]}"
+        else:
+            summary = "(skipped)"
+        logger.info("memory.write.skip", step=f"⏭️ 无需写入: {summary[:60]}")
+        return {**state, "summary": summary, "success": True}
 
     mtype = state.get("target_type", "episodic")
     content = state.get("content", state.get("trigger_text", ""))[:500]
@@ -105,6 +120,15 @@ def write_node(state: MemoryAgentState) -> MemoryAgentState:
         else:
             add_episodic(content, tags=["auto"])
             state["summary"] = f"📝 Agent 记忆已保存 (episodic)"
+    elif mtype == "semantic_knowledge":
+        # 语义知识：写入 topic memory + episodic（结构化沉淀）
+        add_episodic(content, tags=["semantic_knowledge", "auto"])
+        try:
+            from ..topic_memory import write_topic
+            write_topic("projects", f"## 技术选型标准\n{content}\n", append=True)
+        except Exception:
+            pass
+        state["summary"] = f"📚 语义知识已沉淀: {content[:80]}"
     elif mtype == "episodic":
         add_episodic(content, tags=["auto"])
         state["summary"] = f"📝 Agent 记忆已保存 (episodic)"
@@ -134,9 +158,8 @@ def build_memory_graph():
     builder.add_node("decide", decide_node)
     builder.add_node("write", write_node)
     builder.add_edge("__start__", "decide")
-    builder.add_conditional_edges("decide",
-        lambda s: "write" if s.get("decision") in ("write", "update") else "__end__",
-        {"write": "write", "__end__": "__end__"})
+    # skip 也走 write_node（生成说明性 summary），避免返回空输出
+    builder.add_edge("decide", "write")
     builder.add_edge("write", "__end__")
     _graph = builder.compile(checkpointer=MemorySaver())
     return _graph

@@ -1,0 +1,171 @@
+{
+  "timestamp": "2026-07-27T15:59:10.433336",
+  "vault": {
+    "status": "✅",
+    "file_count": 37,
+    "total_chars": 33412,
+    "total_tokens_est": 8353,
+    "folders": {
+      "": 2,
+      "Clippings": 6,
+      "diaries": 6,
+      "habbits": 7,
+      "notes": 11,
+      "知识沉淀": 2,
+      "Agent系统设计": 1,
+      "RAG技术": 1,
+      "项目对比": 1
+    }
+  },
+  "memory": {
+    "status": "✅",
+    "memory_count": 43,
+    "detail": {
+      "profile_fields": [
+        "name",
+        "time"
+      ],
+      "profile_field_count": 2,
+      "episodic_entries": 27,
+      "episodic_range": "2026-07-23 ~ 2026-07-27",
+      "pending_tasks": 5,
+      "history_plans": 9
+    }
+  },
+  "traces": {
+    "status": "✅",
+    "trace_count": 167,
+    "today_traces": 40,
+    "by_type": {
+      "benchmark": 40,
+      "reflect": 12,
+      "plan": 16,
+      "daily_plan": 5,
+      "memory": 29,
+      "chatbot": 63,
+      "qa": 1,
+      "test": 1
+    }
+  },
+  "tools": {
+    "status": "✅",
+    "tool_count": 43,
+    "native_count": 10,
+    "mcp_count": 33,
+    "tools": [
+      "search_vault",
+      "read_folder",
+      "read_file",
+      "read_memory",
+      "write_memory",
+      "update_task_status",
+      "search_web",
+      "get_fund_data",
+      "get_github_trending",
+      "get_ai_news",
+      "github_create_or_update_file",
+      "github_search_repositories",
+      "github_create_repository",
+      "github_get_file_contents",
+      "github_push_files",
+      "github_create_issue",
+      "github_create_pull_request",
+      "github_fork_repository",
+      "github_create_branch",
+      "github_list_commits",
+      "github_list_issues",
+      "github_update_issue",
+      "github_add_issue_comment",
+      "github_search_code",
+      "github_search_issues",
+      "github_search_users",
+      "github_get_issue",
+      "github_get_pull_request",
+      "github_list_pull_requests",
+      "github_create_pull_request_review",
+      "github_merge_pull_request",
+      "github_get_pull_request_files",
+      "github_get_pull_request_status",
+      "github_update_pull_request_branch",
+      "github_get_pull_request_comments",
+      "github_get_pull_request_reviews",
+      "browser_puppeteer_navigate",
+      "browser_puppeteer_screenshot",
+      "browser_puppeteer_click",
+      "browser_puppeteer_fill",
+      "browser_puppeteer_select",
+      "browser_puppeteer_hover",
+      "browser_puppeteer_evaluate"
+    ],
+    "layers": {
+      "native_only": {
+        "vault_readonly": [
+          "search_vault",
+          "read_folder",
+          "read_file"
+        ],
+        "agent_data_rw": [
+          "read_memory",
+          "update_task_status"
+        ],
+        "external": [
+          "get_fund_data",
+          "get_github_trending",
+          "get_ai_news"
+        ]
+      },
+      "github_mcp": [
+        "github_create_or_update_file",
+        "github_search_repositories",
+        "github_create_repository",
+        "github_get_file_contents",
+        "github_push_files",
+        "github_create_issue",
+        "github_create_pull_request",
+        "github_fork_repository",
+        "github_create_branch",
+        "github_list_commits",
+        "github_list_issues",
+        "github_update_issue",
+        "github_add_issue_comment",
+        "github_search_code",
+        "github_search_issues",
+        "github_search_users",
+        "github_get_issue",
+        "github_get_pull_request",
+        "github_list_pull_requests",
+        "github_create_pull_request_review",
+        "github_merge_pull_request",
+        "github_get_pull_request_files",
+        "github_get_pull_request_status",
+        "github_update_pull_request_branch",
+        "github_get_pull_request_comments",
+        "github_get_pull_request_reviews"
+      ],
+      "browser_mcp": [
+        "browser_puppeteer_navigate",
+        "browser_puppeteer_screenshot",
+        "browser_puppeteer_click",
+        "browser_puppeteer_fill",
+        "browser_puppeteer_select",
+        "browser_puppeteer_hover",
+        "browser_puppeteer_evaluate"
+      ]
+    }
+  },
+  "context_quality": {
+    "status": "✅",
+    "context_chars": 1693,
+    "context_tokens_est": 423,
+    "source_count": 4,
+    "source_layers": [
+      "agent_data/episodic",
+      "agent_data/stable_profile",
+      "agent_data/state",
+      "agent_data/task"
+    ]
+  },
+  "overall_score": 100.0,
+  "issues": [],
+  "latency_ms": 1760
+}

@@ -64,7 +64,8 @@ SUGGEST_PROMPT = """Suggestions based on:
 def gather_context(state: ReflectState) -> ReflectState:
     """合并两层上下文。"""
     logger.info("reflect.gather", step="📚 构建上下文...")
-    ctx = build_context(task=state.get("content", "")[:100], max_tokens=2000)
+    ctx = build_context(task=state.get("content", "")[:100], max_tokens=2000,
+                         session_id="reflect_graph")
     state["context"] = ctx["context"]
     logger.info("reflect.gather.done", step=f"✅ 上下文已构建（{len(ctx['context'])} chars）")
     return state

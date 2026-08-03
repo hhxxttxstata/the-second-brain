@@ -1395,6 +1395,20 @@ def run_scorecard() -> dict[str, Any]:
         pass
 
     report["latency_ms"] = int((time.monotonic() - start) * 1000)
+
+    # 注入 Failure Taxonomy 分析
+    try:
+        from app.agent.failure_taxonomy import (
+            compute_failure_distribution,
+            annotate_trace_with_failures,
+        )
+        from app.agent.trace import load_all_traces
+        ft_traces = load_all_traces(limit=200)
+        ft_annotated = [annotate_trace_with_failures(t) for t in ft_traces]
+        report["failure_analysis"] = compute_failure_distribution(ft_annotated)
+    except Exception as e:
+        report["failure_analysis"] = {"error": str(e)}
+
     return report
 
 
@@ -1455,6 +1469,26 @@ def format_scorecard(report: dict[str, Any]) -> str:
             depth = {}
     lines.append(f"  Data: traces={depth.get('traces','?')} | "
                  f"feedbacks={depth.get('feedbacks','?')}")
+
+    # Failure Taxonomy
+    fa = report.get("failure_analysis", {})
+    if fa and not fa.get("error"):
+        lines.append(f"{'─'*54}")
+        lines.append(f"  🔴 Failure Taxonomy")
+        lines.append(f"  失败率: {fa.get('failure_rate', '?')}%")
+        fc = fa.get("by_code", {})
+        if fc:
+            lines.append(f"  Top 失败码:")
+            for code, count in sorted(fc.items(), key=lambda x: -x[1])[:5]:
+                desc = FAILURE_DESCRIPTIONS.get(code, "") if 'FAILURE_DESCRIPTIONS' in dir() else ""
+                pct = round(count / fa['total_traces'] * 100, 1) if fa.get('total_traces') else 0
+                lines.append(f"    {code:30s}  {count:>3} ({pct:>5.1f}%)")
+            traces_ref = fa.get("representative_traces", {})
+            for code in sorted(traces_ref.keys()):
+                lines.append(f"      → 代表 Trace: {traces_ref[code]}")
+        else:
+            lines.append(f"  ✅ 近期 trace 中无失败码触发")
+
     lines.append(f"  ⏱  {report.get('latency_ms', '?')}ms")
     lines.append(f"{'='*54}")
 

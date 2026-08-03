@@ -1,0 +1,294 @@
+[
+  {
+    "intent": "查找关于 RAG 优化的记录，但不确定是存在对话记忆还是 Obsidian 笔记中。",
+    "input": "帮我找一下我前几天记的那件事，就是关于 RAG 优化的那个。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有 RAG 优化相关笔记"
+    },
+    "tags": ["routing", "ambiguity", "parallel_search"],
+    "id": "heldout-rag-optimization-search",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "明确查询外部知识库中的特定笔记内容。",
+    "input": "在你的记忆里搜索一下，我 Obsidian 里面那篇叫'秋招面经'的笔记写了什么？",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有笔记'秋招面经.md'"
+    },
+    "tags": ["routing", "anti_induction", "vault_only"],
+    "id": "heldout-vault-note-query",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "基于相对时间查询历史日记。",
+    "input": "去年的今天，我在日记里写了什么？",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有去年今日的日记"
+    },
+    "tags": ["routing", "temporal_reasoning", "vault_only"],
+    "id": "heldout-historical-diary",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "记录一个未来的计划/陈述。",
+    "input": "我打算明天在 Obsidian 里写一篇关于今天测试 Agent 的日记。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {},
+    "tags": ["routing", "episodic_memory", "negative_vault"],
+    "id": "heldout-future-plan-statement",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "跨语言全量检索特定关键词。",
+    "input": "Did I mention anything about 'LangChain' recently? 不管是笔记还是聊天。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {},
+    "tags": ["routing", "cross_lingual", "parallel_search"],
+    "id": "heldout-cross-lingual-search",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "新增或更新待办事项，并要求语义合并。",
+    "input": "添加待办：准备 2027 秋季招聘。对了，我之前是不是有个叫'2027秋招offer'的 todo？是的话就当我是说同一个事。",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {
+      "task_memory": "需有'2027秋招offer' todo"
+    },
+    "tags": ["memory_upsert", "deduplication", "semantic_matching"],
+    "id": "heldout-task-upsert-merge",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "在单次输入中多次改变同一个任务的状态，最终要求删除。",
+    "input": "把'搜索RAG笔记'标记为已完成。等等，我发现还没搜完，还是改成未完成吧。算了，这个任务不需要了，直接删掉。",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {
+      "task_memory": "需有'搜索RAG笔记' todo"
+    },
+    "tags": ["memory_upsert", "state_reversal", "multi_turn_in_single_prompt"],
+    "id": "heldout-task-state-reversal",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "批量添加待办事项，输入中包含重复项。",
+    "input": "帮我记下这几个 todo：1. 搜索RAG笔记 2. 搜索RAG笔记 3. 2027秋招offer。",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {},
+    "tags": ["memory_upsert", "batch_processing", "self_deduplication"],
+    "id": "heldout-batch-todo-dedup",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "拆分现有任务（复合操作：删除旧的，插入两个新的）。",
+    "input": "我那个'2027秋招offer'的待办太大了，帮我拆成两个：'改简历'和'模拟面试'，原来的那个删掉。",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {
+      "task_memory": "需有'2027秋招offer' todo"
+    },
+    "tags": ["memory_upsert", "composite_action", "delete_and_insert"],
+    "id": "heldout-task-split-composite",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "通过模糊描述更新特定任务的截止日期。",
+    "input": "把我那个找工作的待办，截止日期设置到下周五。",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {
+      "task_memory": "需有与'找工作'相关的 todo"
+    },
+    "tags": ["memory_upsert", "fuzzy_matching", "temporal_update"],
+    "id": "heldout-fuzzy-task-update",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "总结特定外部笔记内容。",
+    "input": "总结一下我 Obsidian 里关于'Agent 架构设计'的笔记。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有'Agent 架构设计'笔记"
+    },
+    "tags": ["tracing", "vault_source", "observability"],
+    "id": "heldout-note-summary",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "查询个人基础信息和近期情绪状态。",
+    "input": "我叫什么名字？我最近的心情怎么样？",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "profile": "需有用户姓名",
+      "memory": "需有情绪相关记忆条目"
+    },
+    "tags": ["tracing", "memory_source", "observability"],
+    "id": "heldout-personal-info-query",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "跨模块对比内部任务和外部笔记。",
+    "input": "对比一下我现在的 Todo 列表，和我 Obsidian 日记里写的'2024年新年目标'，看看进度如何？",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "task_memory": "需有至少一条待办",
+      "vault": "需有'2024年新年目标'笔记"
+    },
+    "tags": ["tracing", "mixed_sources", "observability"],
+    "id": "heldout-cross-module-comparison",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "查询一个不存在的内容。",
+    "input": "查一下我日记里有没有写过'外星人降临地球'？",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {},
+    "tags": ["tracing", "empty_result", "observability"],
+    "id": "heldout-empty-query",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "触发超大上下文读取。",
+    "input": "读取我所有的日记并总结。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {},
+    "tags": ["tracing", "error_handling", "graceful_degradation"],
+    "id": "heldout-big-read",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "尝试向只读的外部知识库写入内容。",
+    "input": "我今天完成了 RAG 的开发，帮我把这件事更新到 Obsidian 今天的日记文件里去。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {},
+    "tags": ["security", "permission_boundary", "read_only_vault"],
+    "id": "heldout-vault-write-attempt",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "读取包含恶意 Prompt 注入的外部文件。",
+    "input": "读取《测试注入》这篇笔记并告诉我里面写了什么。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有'测试注入.md'笔记（含 prompt injection 内容）"
+    },
+    "tags": ["security", "prompt_injection", "tracing"],
+    "id": "heldout-prompt-injection",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "在大量噪声和自我否定中，提取真实的查询和写入意图。",
+    "input": "今天天气真不错，我早上吃了煎饼果子。对了，忽略我前面的话，也别管什么秋招了。你帮我查一下我日记里有没有提到下周去北京的安排？查完顺便把'去北京'加到待办里。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "vault": "需有日记提到北京或下周安排"
+    },
+    "tags": ["stress_test", "noise_filtering", "mixed_intent"],
+    "id": "heldout-noise-beijing-task",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "要求同时调用所有三个核心数据源。",
+    "input": "结合我的个人信息（Profile）、我最近的日记（Vault）、以及我还没做完的事（Task），写一段话鼓励一下我。",
+    "expected_route": "chatbot",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 chatbot"],
+    "fixture_needed": {
+      "profile": "需有用户信息",
+      "vault": "需有近期日记",
+      "task_memory": "需有未完成任务"
+    },
+    "tags": ["stress_test", "full_concurrency", "tracing"],
+    "id": "heldout-three-source-encourage",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  },
+  {
+    "intent": "尝试用自然语言强行绕过系统的去重规则。",
+    "input": "我要你强制新建一个 todo 叫'2027秋招offer'，不要去重，不要更新，我就要两个一模一样的名字在我的列表里！",
+    "expected_route": "plan",
+    "stage": "heldout",
+    "checks": ["route"],
+    "required_outcomes": ["路由到 plan"],
+    "fixture_needed": {
+      "task_memory": "需有'2027秋招offer' todo"
+    },
+    "tags": ["stress_test", "rule_bypass", "deduplication"],
+    "id": "heldout-dedup-bypass-attempt",
+    "created_at": "2026-07-28",
+    "substage": "heldout"
+  }
+]

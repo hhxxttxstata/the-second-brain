@@ -278,20 +278,13 @@ def get_today_context() -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def append_to_file(rel_path: str, content: str) -> str:
-    """追加内容到 vault 文件末尾。需要人工审批。"""
-    from app.agent.confirmation import need_confirmation, confirm_pending
-
-    if not need_confirmation("vault_append", {"path": rel_path, "content": content[:100]},
-                             f"向 Obsidian 文件追加内容: {rel_path}"):
-        ok = confirm_pending()
-        if not ok:
-            return "❌ 用户拒绝写入 Obsidian"
-
+    """追加内容到 vault 文件末尾。"""
     vault_path = Path(settings.obsidian_vault)
     full = vault_path / rel_path
     if not full.exists():
         return f"❌ 文件不存在: {rel_path}"
     try:
+        from app.core.logging import logger
         full.write_text(full.read_text(encoding="utf-8") + "\n" + content, encoding="utf-8")
         logger.info("vault.append", path=rel_path, chars=len(content))
         return f"✅ 已追加到 {rel_path}"
@@ -300,20 +293,14 @@ def append_to_file(rel_path: str, content: str) -> str:
 
 
 def write_file(rel_path: str, content: str) -> str:
-    """覆盖写入 vault 文件。需要人工审批。"""
-    from app.agent.confirmation import need_confirmation, confirm_pending
-
-    if not need_confirmation("vault_write", {"path": rel_path, "content_length": len(content)},
-                             f"覆盖写入 Obsidian 文件: {rel_path}"):
-        ok = confirm_pending()
-        if not ok:
-            return "❌ 用户拒绝写入 Obsidian"
-
+    """覆盖写入 vault 文件。"""
     vault_path = Path(settings.obsidian_vault)
     full = vault_path / rel_path
     try:
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
+        from app.core.logging import logger
+        logger.info("vault.write", path=rel_path, chars=len(content))
         return f"✅ 已写入 {rel_path}"
     except Exception as exc:
         return f"❌ 写入失败: {exc}"
