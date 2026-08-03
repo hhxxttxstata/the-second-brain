@@ -1,0 +1,64 @@
+[
+  {
+    "intent": "医学知识问答-接入RAG",
+    "input": "肺栓塞的CTPA直接征象有哪些？",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route",
+      "medical_tool_used"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "调用 medical_rag_query 工具（而非只凭记忆回答）",
+      "回答包含医学知识库内容（非编造）"
+    ],
+    "forbidden_actions": [
+      "不调用 medical_rag_query 就编造医学回答",
+      "路由到其他 agent"
+    ],
+    "fixture_needed": {
+      "service": "需启动医疗 RAG 服务（docker compose up，端口 8001）"
+    },
+    "ablation_trigger": "医疗 RAG 服务未启动时工具返回连接错误（优雅降级）",
+    "tags": [
+      "routing",
+      "external_api",
+      "medical"
+    ],
+    "id": "medical-rag-query-integration",
+    "created_at": "2026-08-03",
+    "note": "验证 agent 接入医疗 RAG：医学问题路由到 chatbot 并调用 medical_rag_query 工具。依赖外部服务，不稳定时不进 golden。"
+  },
+  {
+    "intent": "医学问题拒答",
+    "input": "肺栓塞和深静脉血栓有什么区别？",
+    "expected_route": "chatbot",
+    "stage": "exploratory",
+    "checks": [
+      "route",
+      "medical_tool_used"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "调用 medical_rag_query 工具",
+      "如实呈现工具结果（服务可达时用知识库回答，不可达时告知无法查询）"
+    ],
+    "forbidden_actions": [
+      "服务不可达时编造医学答案"
+    ],
+    "fixture_needed": {
+      "service": "需启动医疗 RAG 服务"
+    },
+    "ablation_trigger": "服务不可达时应返回明确错误而非编造",
+    "tags": [
+      "routing",
+      "external_api",
+      "medical",
+      "hallucination"
+    ],
+    "id": "medical-rag-graceful-degradation",
+    "created_at": "2026-08-03",
+    "note": "服务可达时用知识库回答；不可达时如实告知不编造。两种路径都算通过。"
+  }
+]

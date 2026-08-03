@@ -340,6 +340,122 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
 
     logger.info("native_tools_registered", count=len(registry._native_tools))
 
+    # ── 医疗 RAG 工具（Pulmonary_embolism_system 桥接） ──
+
+    def _medical_rag_query(**kw: Any) -> str:
+        """调用医疗 RAG 服务：医学知识库检索 + LLM 回答。"""
+        import requests
+        from app.core.config import settings
+        question = kw.get("question", "")
+        if not question:
+            return "❌ 缺少 question 参数"
+        top_k = int(kw.get("top_k", 10) or 10)
+        url = f"{settings.medical_rag_url}/chat"
+        headers = {"Content-Type": "application/json"}
+        if settings.medical_rag_api_key:
+            headers["Authorization"] = f"Bearer {settings.medical_rag_api_key}"
+        try:
+            resp = requests.post(
+                url, json={"question": question, "top_k": top_k},
+                headers=headers, timeout=60,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("success"):
+                return f"❌ 医学问答失败: {data.get('answer', '未知错误')}"
+            answer = data.get("answer", "")
+            sources = data.get("sources", [])
+            lines = [f"## 医学回答\n{answer}"]
+            if sources:
+                lines.append("\n## 引用来源")
+                for i, s in enumerate(sources[:3], 1):
+                    lines.append(f"  {i}. {s.get('filename','?')} (score={s.get('score',0):.2f})")
+                    if s.get("text"):
+                        lines.append(f"     {s['text'][:150]}")
+            if data.get("is_refusal"):
+                lines.append("\n⚠️ 系统判定该问题超出医学知识库范围")
+            return "\n".join(lines)
+        except requests.exceptions.ConnectionError:
+            return "❌ 无法连接医疗 RAG 服务，请确认已启动 (docker compose up)"
+        except Exception as exc:
+            return f"❌ 医学问答异常: {exc}"
+
+    registry.register_native(RegisteredTool(
+        name="medical_rag_query",
+        description="肺栓塞医学知识库问答——检索医学文献并用 LLM 回答。用户问肺栓塞、CTPA、深静脉血栓、抗凝治疗等医学问题时使用",
+        schema_={
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "医学问题（中文）"},
+                "top_k": {"type": "integer", "description": "检索片段数 1-20，默认10"},
+            },
+            "required": ["question"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["请求医学知识库 API"],
+        handler=_medical_rag_query,
+    ))
+
+    def _medical_pe_diagnosis(**kw: Any) -> str:
+        """调用医疗影像诊断服务：CTPA NIfTI 影像肺栓塞风险预测。"""
+        import requests
+        from app.core.config import settings
+        file_path = kw.get("file_path", "")
+        if not file_path:
+            return "❌ 缺少 file_path 参数（NIfTI 文件路径）"
+        from pathlib import Path
+        p = Path(file_path)
+        if not p.exists():
+            return f"❌ 文件不存在: {file_path}"
+        url = f"{settings.medical_rag_url}/diagnosis/predict"
+        headers = {}
+        if settings.medical_rag_api_key:
+            headers["Authorization"] = f"Bearer {settings.medical_rag_api_key}"
+        try:
+            with open(p, "rb") as f:
+                resp = requests.post(
+                    url, files={"file": (p.name, f, "application/octet-stream")},
+                    headers=headers, timeout=180,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("success"):
+                return f"❌ 诊断失败: {data.get('error', '未知错误')}"
+            lines = [
+                f"## 肺栓塞影像诊断",
+                f"病例: {data.get('filename','?')}",
+                f"风险等级: **{data.get('risk_level','?')}**",
+                f"预测概率: {data.get('probability',0):.4f} (阈值 {data.get('threshold',0.5)})",
+                f"推理耗时: {data.get('inference_time','?')}s",
+            ]
+            vs = data.get("visualization", {})
+            if vs.get("top_slices"):
+                lines.append(f"Top 可疑切片: {len(vs['top_slices'])} 个")
+                for s in vs["top_slices"][:3]:
+                    lines.append(f"  slice {s.get('slice_index')}: "
+                                 f"prob={s.get('probability',0):.3f} "
+                                 f"attention={s.get('attention_weight',0):.3f}")
+            return "\n".join(lines)
+        except requests.exceptions.ConnectionError:
+            return "❌ 无法连接医疗影像服务，请确认已启动 (docker compose up)"
+        except Exception as exc:
+            return f"❌ 影像诊断异常: {exc}"
+
+    registry.register_native(RegisteredTool(
+        name="medical_pe_diagnosis",
+        description="肺栓塞影像诊断——对 CTPA NIfTI 影像(.nii/.nii.gz)做风险预测。用户提供影像文件并要求诊断肺栓塞时使用",
+        schema_={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "NIfTI 影像文件路径 (.nii / .nii.gz)"},
+            },
+            "required": ["file_path"],
+        },
+        source="native", server_name=None,
+        risk_level="medium", side_effects=["请求医学影像推理服务"],
+        handler=_medical_pe_diagnosis,
+    ))
+
     # ── Topic Memory 工具 ──
 
     from app.agent.topic_memory import (
