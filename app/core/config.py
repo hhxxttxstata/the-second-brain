@@ -29,12 +29,6 @@ class Settings(BaseSettings):
     def agent_data_dir(self) -> Path:
         return Path(__file__).resolve().parent.parent.parent / "agent_data"
 
-    # Feishu Bot
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
-    feishu_bot_name: str = "Agent助手"
-    notify_webhook_url: str | None = None
-
     # 医疗 RAG 服务（Pulmonary_embolism_system）
     medical_rag_url: str = "http://127.0.0.1:8001"
     medical_rag_api_key: str | None = None
