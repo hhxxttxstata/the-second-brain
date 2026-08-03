@@ -1,0 +1,33 @@
+[
+  {
+    "intent": "长会话退化测试",
+    "input": "我刚刚在前面的对话里让你记住了一个重要的偏好，你现在还记得是什么吗？",
+    "expected_route": "chatbot",
+    "stage": "challenge",
+    "checks": ["route", "long_context_recall"],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "上下文压力检测生效（历史被压缩时保留关键信息）",
+      "能回忆起早期轮次设定的关键偏好（如'代码示例默认用Python'）"
+    ],
+    "forbidden_actions": [
+      "回答'我不记得'但早期会话中明确设定过该偏好",
+      "上下文超预算导致回答质量严重退化（编造/丢失关键信息）"
+    ],
+    "fixture_needed": {
+      "session": "需预置 40 轮以上长会话历史，早期包含'以后代码默认用Python'的明确指令",
+      "memory": "需有对应偏好的记忆（session_summary 或 episodic）"
+    },
+    "fixture_setup": [
+      "向 messages 表写入 40 轮 human/ai 对话，第 3 轮包含'以后所有的代码示例都默认用 Python'",
+      "写入一条 session_summary 记忆：'用户偏好：代码示例默认用Python'",
+      "调用 build_context 确认压力等级为 yellow/red"
+    ],
+    "tags": ["long_context", "memory_recall", "context_pressure"],
+    "id": "long-context-degradation-recall",
+    "created_at": "2026-08-02",
+    "known_issue": "会话历史全量注入导致 token 超预算时，早期信息可能丢失",
+    "ablation_trigger": "禁用 context_pressure 压缩时早期信息丢失",
+    "note": "验证 Context Pressure Monitor：40 轮历史压缩后仍能回忆起早期偏好。早期轮次信息通过 session_summary 摘要保留。"
+  }
+]

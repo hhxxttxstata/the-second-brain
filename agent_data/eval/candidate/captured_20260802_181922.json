@@ -1,0 +1,27 @@
+[
+  {
+    "id": "candidate-captured-20260802181919",
+    "intent": "多动作执行-写计划+改简历",
+    "input": "把你的五条建议写入plan的简历优化计划里面，然后直接在我的RAG和Agent项目描述里面贯彻你的建议1和4，直接修改简历描述",
+    "expected_route": "plan",
+    "stage": "candidate",
+    "tags": ["routing", "memory_write", "vault_write", "planning", "multi_intent"],
+    "note": "我要agent做两件事：把五条建议写入plan的简历优化计划里面；在obsidian的RAG和Agent项目描述里面贯彻建议1和4修改简历描述。但agent输出直接给出今日计划，没完成目标",
+    "created_at": "2026-08-02",
+    "known_issue": "用户反馈该回答不满足预期。trace: trace_9466966753",
+    "trace_ref": "trace_9466966753",
+    "required_outcomes": [
+      "路由到 plan",
+      "把五条建议写入 plan 的简历优化计划（调用写工具）",
+      "修改 RAG 和 Agent 项目描述中的简历内容（调用 vault_write/write_file）"
+    ],
+    "forbidden_actions": [
+      "只输出今日计划而不执行任何写入动作",
+      "忽略'修改简历描述'的意图"
+    ],
+    "fixture_needed": {
+      "vault": "需有 plan 目录下的简历优化计划文件 + 项目描述笔记",
+      "session": "需有上一会话中给出五条建议的记录"
+    }
+  }
+]

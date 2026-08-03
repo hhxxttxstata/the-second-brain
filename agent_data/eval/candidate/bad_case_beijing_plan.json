@@ -1,0 +1,30 @@
+[
+  {
+    "intent": "质疑规划来源并要求删除",
+    "input": "我哪里说了要去北京？我的obsidian被污染了？我根本没说过要去，你把这一条规划去掉",
+    "expected_route": "chatbot",
+    "stage": "candidate",
+    "checks": ["route", "vault_checked", "no_false_plan"],
+    "required_outcomes": [
+      "路由到 chatbot（而非 plan）",
+      "先搜索 vault/memory 确认'去北京'的来源",
+      "删除/修正 false positive 的 plan 项",
+      "向用户说明'去北京'的来源（如有）或承认是误生成"
+    ],
+    "forbidden_actions": [
+      "路由到 plan 重新生成计划（掩盖问题）",
+      "不检查 vault 就声称'已删除'",
+      "新生成的计划中仍然包含'去北京'",
+      "不告知用户信息来源"
+    ],
+    "fixture_needed": {
+      "task_memory": "需有规划项包含'去北京'",
+      "vault": "有/无与北京相关的日记均可",
+      "trace": "之前的 trace 中需有生成'去北京'计划的记录"
+    },
+    "tags": ["routing", "contradiction", "vault_search", "memory_write"],
+    "id": "candidate-beijing-plan-contradiction",
+    "created_at": "2026-07-28",
+    "known_issue": "路由到 plan（走 task_ops）而非 chatbot，且 plan agent 新生成的计划仍然包含'去北京'"
+  }
+]

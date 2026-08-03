@@ -54,7 +54,9 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
     ))
 
     def _read_file(**kw: Any) -> str:
-        return vault.read_file(**kw)
+        # schema 暴露的参数名是 path，vault.read_file 实际签名是 rel_path
+        rel_path = kw.get("path") or kw.get("rel_path", "")
+        return vault.read_file(rel_path)
 
     registry.register_native(RegisteredTool(
         name="read_file",
@@ -78,7 +80,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
 
     registry.register_native(RegisteredTool(
         name="vault_append",
-        description="向 Obsidian 笔记文件追加内容（需人工审批）",
+        description="向 Obsidian 笔记文件追加内容",
         schema_={
             "type": "object",
             "properties": {
@@ -88,7 +90,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
             "required": ["rel_path", "content"],
         },
         source="native", server_name=None,
-        risk_level="high", side_effects=["修改 Obsidian 文件"],
+        risk_level="low", side_effects=["修改 Obsidian 文件"],
         handler=_vault_append,
     ))
 
@@ -97,7 +99,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
 
     registry.register_native(RegisteredTool(
         name="vault_write",
-        description="覆盖写入 Obsidian 笔记文件（需人工审批）",
+        description="覆盖写入 Obsidian 笔记文件",
         schema_={
             "type": "object",
             "properties": {
@@ -107,7 +109,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
             "required": ["rel_path", "content"],
         },
         source="native", server_name=None,
-        risk_level="high", side_effects=["覆盖修改 Obsidian 文件"],
+        risk_level="low", side_effects=["覆盖修改 Obsidian 文件"],
         handler=_vault_write,
     ))
 
@@ -140,6 +142,43 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         source="native", server_name=None,
         risk_level="low", side_effects=[],
         handler=_read_memory,
+    ))
+
+    def _search_memories(**kw: Any) -> str:
+        """搜索记忆 — 按关键词模糊搜索所有记忆条目。"""
+        from .memory_store import search_memories as sql_search
+        query = kw.get("query", "")
+        limit = int(kw.get("limit", 5))
+        memory_type = kw.get("memory_type", "")
+        if not query:
+            return "请输入搜索关键词 (query)"
+        results = sql_search(query=query, limit=limit,
+                             memory_type=memory_type or None)
+        if not results:
+            return f"未找到与「{query}」相关的记忆。"
+        lines = [f"## 记忆搜索: {query}\n"]
+        for r in results:
+            ts = r.get("created_at", "")[:10]
+            mtype = r.get("memory_type", "?")
+            content = r.get("content", "")[:200]
+            lines.append(f"- [{ts}] [{mtype}] {content}")
+        return "\n".join(lines)
+
+    registry.register_native(RegisteredTool(
+        name="search_memories",
+        description="搜索 Agent 记忆（按关键词模糊搜索所有记忆类型）",
+        schema_={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词"},
+                "limit": {"type": "integer", "description": "返回条数（默认5）"},
+                "memory_type": {"type": "string", "description": "可选过滤：episodic/task/task_plan"},
+            },
+            "required": ["query"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=[],
+        handler=_search_memories,
     ))
 
     def _write_episodic(**kw: Any) -> str:
@@ -192,7 +231,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
             "required": ["task_title", "status"],
         },
         source="native", server_name=None,
-        risk_level="low", side_effects=["修改 task_memory.json"],
+        risk_level="low", side_effects=["修改 task memory"],
         handler=_update_task,
     ))
 
@@ -300,3 +339,81 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
     ))
 
     logger.info("native_tools_registered", count=len(registry._native_tools))
+
+    # ── Topic Memory 工具 ──
+
+    from app.agent.topic_memory import (
+        read_topic as _read_topic,
+        write_topic as _write_topic,
+        search_topic as _search_topic,
+        upsert_index_entry,
+        load_relevant_memories,
+        read_index,
+        get_all_topics,
+    )
+
+    def _do_read_topic(**kw: Any) -> str:
+        path = kw.get("topic_path", "")
+        return _read_topic(path)
+
+    registry.register_native(RegisteredTool(
+        name="read_topic_memory",
+        description="读取一个 Topic Memory 文件的完整内容。Topic 文件在 agent_data/memory/ 下，如 people/tata、preferences、projects/2027-autumn-recruitment",
+        schema_={
+            "type": "object",
+            "properties": {
+                "topic_path": {"type": "string", "description": "Topic 文件路径（不含 .md），如 'people/tata'、'preferences'、'projects/2027-autumn-recruitment'"},
+            },
+            "required": ["topic_path"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=[],
+        handler=_do_read_topic,
+    ))
+
+    def _do_write_topic(**kw: Any) -> str:
+        path = kw.get("topic_path", "")
+        content = kw.get("content", "")
+        line = _write_topic(path, content)
+        return f"✅ 已写入 topic memory: {line}"
+
+    registry.register_native(RegisteredTool(
+        name="write_topic_memory",
+        description="写入一个 Topic Memory 文件（覆盖写）。Topic 文件在 agent_data/memory/ 下，如 'people/zhang-san' 会创建 people/zhang-san.md，'preferences' 会创建 preferences.md。写入后自动在 MEMORY.md 更新索引。",
+        schema_={
+            "type": "object",
+            "properties": {
+                "topic_path": {"type": "string", "description": "Topic 文件路径（不含 .md），如 'people/tata'、'preferences'"},
+                "content": {"type": "string", "description": "Markdown 内容"},
+            },
+            "required": ["topic_path", "content"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["写入 memory Topic File"],
+        handler=_do_write_topic,
+    ))
+
+    def _do_search_topic(**kw: Any) -> str:
+        query = kw.get("query", "")
+        results = _search_topic(query)
+        if not results:
+            return f"未找到与「{query}」相关的 topic memory。"
+        lines = [f"## Topic 搜索: {query}\n"]
+        for r in results:
+            lines.append(f"- [{r['file']}:{r['line']}] {r['content']}")
+        return "\n".join(lines)
+
+    registry.register_native(RegisteredTool(
+        name="search_topic_memory",
+        description="在所有 Topic Memory 文件中搜索关键词",
+        schema_={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词"},
+            },
+            "required": ["query"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=[],
+        handler=_do_search_topic,
+    ))

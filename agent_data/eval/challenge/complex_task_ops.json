@@ -1,0 +1,52 @@
+[
+  {
+    "intent": "多步任务操作",
+    "input": "Add a new task: 2027 Autumn Recruitment Offer。对了，我之前是不是有个叫'2027秋招offer'的待办？如果有的话，把它们 merge 一下，状态改成'进行中'。",
+    "expected_route": "plan",
+    "stage": "challenge",
+    "checks": ["route", "task_merged"],
+    "known_issue": "路由和框架正确，但 LLM 未将 add+现有同名 解析为 merge 操作",
+    "required_outcomes": [
+      "路由到 plan",
+      "合并重复任务（同标题）",
+      "状态改为 进行中"
+    ],
+    "forbidden_actions": [
+      "创建重复任务不合并",
+      "丢弃用户输入的 merge 意图"
+    ],
+    "fixture_needed": {
+      "task_memory": "需预置一条 '2027秋招offer' todo（status=pending）"
+    },
+    "tags": ["routing", "memory_write", "contradiction"],
+    "id": "routing-Add-new-task-merge",
+    "created_at": "2026-07-26",
+    "substage": null
+  },
+  {
+    "intent": "综合写计划",
+    "input": "结合我个人的 Profile（我是谁），以及我最近的日记，还有我所有的 Todo，给我写一份明天的计划。",
+    "expected_route": "plan",
+    "stage": "challenge",
+    "checks": ["route", "multi_source"],
+    "known_issue": "关键词'Todo'触发 task_ops 分支而非 plan_graph，需细化 is_task_op 检测",
+    "required_outcomes": [
+      "路由到 plan",
+      "输出格式为计划列表（含标题/优先级）",
+      "计划内容涉及至少一个个人目标（来自 profile）",
+      "计划内容涉及至少一个待办（来自 task_memory）"
+    ],
+    "forbidden_actions": [
+      "输出计划但内容为空或与用户无关",
+      "只使用了对话上下文而未读取 vault/memory"
+    ],
+    "fixture_needed": {
+      "profile": "需预置用户背景（如塔塔，26岁，AI方向）",
+      "task_memory": "需有至少一条待办"
+    },
+    "tags": ["routing", "planning", "multi_source"],
+    "id": "routing-comprehensive-plan-with-todo",
+    "created_at": "2026-07-26",
+    "substage": null
+  }
+]

@@ -1,0 +1,131 @@
+[
+  {
+    "intent": "自我认知",
+    "input": "你是谁？你有什么能力？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "回答包含 Agent 的能力说明"
+    ],
+    "forbidden_actions": [
+      "路由到 memory/plan/reflect"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing"
+    ],
+    "id": "routing-你是谁？你有什么能力？",
+    "created_at": "2026-07-26",
+    "substage": "regression"
+  },
+  {
+    "intent": "日记检索",
+    "input": "我最近写了什么日记？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "回答基于 vault 日记内容（非编造）"
+    ],
+    "forbidden_actions": [
+      "路由到 memory",
+      "返回编造的日记内容"
+    ],
+    "fixture_needed": {
+      "vault": "需有至少3篇近期日记"
+    },
+    "regression_badge": true,
+    "badcase_from": "BC5 - 路由错误",
+    "tags": [
+      "routing",
+      "vault_search"
+    ],
+    "id": "routing-我最近写了什么日记？",
+    "created_at": "2026-07-26",
+    "substage": "regression"
+  },
+  {
+    "intent": "任务记忆",
+    "input": "记住我的目标是秋招拿到AI应用开发offer",
+    "expected_route": "memory",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_update"
+    ],
+    "required_outcomes": [
+      "路由到 memory",
+      "目标写入记忆（新增待办）或确认目标已存在（不重复写入）"
+    ],
+    "forbidden_actions": [
+      "路由到 chatbot",
+      "只做口头回复不写入记忆"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "memory_write"
+    ],
+    "id": "routing-记住我的目标是秋招拿到AI应用开",
+    "created_at": "2026-07-26",
+    "substage": "regression",
+    "note": "如果目标已在 profile 中，agent 确认不重复写入也算通过（reasonable alternative）"
+  },
+  {
+    "intent": "生成计划",
+    "input": "帮我生成今天的计划",
+    "expected_route": "plan",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "output_has_items"
+    ],
+    "required_outcomes": [
+      "路由到 plan",
+      "输出包含至少3条计划项",
+      "每条计划包含优先级或分类"
+    ],
+    "forbidden_actions": [
+      "路由到 chatbot/reflect/memory"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "planning"
+    ],
+    "id": "routing-帮我生成今天的计划",
+    "created_at": "2026-07-26",
+    "substage": "regression"
+  },
+  {
+    "intent": "反思分析",
+    "input": "反思一下我最近的进展",
+    "expected_route": "reflect",
+    "stage": "golden",
+    "checks": [
+      "route"
+    ],
+    "required_outcomes": [
+      "路由到 reflect",
+      "输出包含分析、批判、建议、总结四部分"
+    ],
+    "forbidden_actions": [
+      "路由到 chatbot 只做闲聊"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "reflection"
+    ],
+    "id": "routing-反思一下我最近的进展",
+    "created_at": "2026-07-26",
+    "substage": "regression"
+  }
+]

@@ -206,8 +206,28 @@ def cmd_ask(question: str):
     print()
 
     from app.agent.graphs.orchestrator import run_orchestrator
-    import uuid
-    result = run_orchestrator(input_text=question, thread_id=f"ask_{uuid.uuid4().hex[:8]}")
+    from app.agent.session import get_default_session, load_messages, append_exchange
+    from app.agent.approval_router import route_approval
+    from app.agent.session_jsonl import log_session_summary
+
+    session_id = get_default_session()
+    history = load_messages(session_id)
+
+    # 检查是否有待审批操作
+    from app.agent.pending_ledger import get_pending_actions
+    pending = get_pending_actions(session_id=session_id, status="pending_approval")
+    if pending:
+        approval = route_approval(question, session_id=session_id)
+        if approval == "approved":
+            print("  ✅ 已批准，继续执行...")
+        elif approval == "rejected":
+            print("  ❌ 已拒绝")
+
+    result = run_orchestrator(
+        input_text=question,
+        thread_id=session_id,
+        conversation=history,
+    )
 
     if result.get("success"):
         route = result.get("route", "?")
@@ -218,6 +238,43 @@ def cmd_ask(question: str):
             print(result["result"])
         if result.get("result_data"):
             print(f"\n  (data: {result['result_data']})")
+
+        if result.get("result"):
+            append_exchange(session_id, question, result["result"])
+
+        # 写 session summary 到 JSONL
+        route = result.get("route", "?")
+        from app.agent.pending_ledger import get_pending_actions
+        pending_keys = [a["idempotency_key"][:20]
+                        for a in get_pending_actions(session_id=session_id, status="pending_approval")]
+        from app.agent.handoff import get_active_handoffs
+        active_handoffs = get_active_handoffs()
+        pending_handoffs = [
+            {"task_id": h["task_id"], "action": h.get("pending_tool", ""), "status": h.get("status", "")}
+            for h in active_handoffs
+        ]
+
+        tool_calls_from_trace = []
+        try:
+            from app.agent.trace import get_latest_trace
+            trace = get_latest_trace()
+            if trace:
+                tool_calls_from_trace = trace.get("tool_calls", [])
+        except Exception:
+            pass
+
+        from app.agent.session_jsonl import log_session_summary
+        log_session_summary(
+            session_id=session_id,
+            goal=question[:120],
+            decisions=[],
+            completed=[f"路由={route}: 已回答"],
+            pending=pending_handoffs or None,
+            next_actions=[f"检查活跃 handoffs: {len(active_handoffs)} 个待处理"],
+            evidence_refs=[f"trace://{result.get('run_id', '?')}"],
+            summary=f"路由={route}: {question[:60]}",
+            tool_count=len(tool_calls_from_trace),
+        )
     else:
         print(f"❌ 失败: {result.get('error', '未知错误')}")
 
@@ -310,13 +367,7 @@ def cmd_eval():
     use_llm = "--llm" in flags
     use_score = "--score" in flags
 
-    if use_score:
-        from app.agent.scorecard import run_scorecard, format_scorecard
-        print("📊 正在分析 Agent 评分卡...\n")
-        report = run_scorecard()
-        print(format_scorecard(report))
-        return
-
+    # 先解析 tier（供 failure 分析和后续共用）
     if "--all" in flags:
         tier = "all"
         label = "所有层级"
@@ -338,6 +389,29 @@ def cmd_eval():
     else:
         tier = "regression"
         label = "Golden Regression"
+
+    use_failure = "--failure" in flags or tier == "all"
+
+    if use_failure and not use_score:
+        # 独立运行失败分析
+        from app.agent.failure_taxonomy import (
+            compute_failure_distribution,
+            format_failure_report,
+            annotate_trace_with_failures,
+        )
+        from app.agent.trace import load_all_traces
+        traces = load_all_traces(limit=200)
+        annotated = [annotate_trace_with_failures(t) for t in traces]
+        dist = compute_failure_distribution(annotated)
+        print(format_failure_report(dist))
+        return
+
+    if use_score:
+        from app.agent.scorecard import run_scorecard, format_scorecard
+        print("📊 正在分析 Agent 评分卡...\n")
+        report = run_scorecard()
+        print(format_scorecard(report))
+        return
 
     cases = load_test_cases(tier=tier)
     print(f"📋 加载了 {len(cases)} 个测试用例 ({label})\n")
@@ -371,16 +445,120 @@ def cmd_eval():
             print(f"  {rm} 路由: {route} (期望: {expected})")
         else:
             print(f"  · 路由: {route}")
-        if note and route != expected:
+
+        # 约束检查详情
+        outcome_detail = r.get("outcome_checks", [])
+        for od in outcome_detail:
+            oicon = "✅" if od.get("ok") else "❌"
+            print(f"     {oicon} outcome: {od.get('outcome','')[:70]}")
+            if not od.get("ok"):
+                print(f"         └ {od.get('reason','')[:60]}")
+        for fh in r.get("forbidden_hits", []):
+            print(f"     🚫 forbidden: {fh[:90]}")
+
+        if note and not r.get("success"):
             print(f"     🐛 {note[:80]}")
 
     if use_llm:
         print("\n🤖 调用 LLM Grader 深度评判...")
         _grade_with_llm(cases, report)
+
+    # 失败分析（如果有关联的 trace）
+    if tier in ("regression", "golden", "all"):
+        print("\n🔍 失败分类分析...")
+        _show_failure_summary()
     print()
 
 
-def _grade_with_llm(cases: list[dict], report: dict) -> None:
+def _show_failure_summary():
+    """从最新 benchmark 的失败 case 关联 trace 分析失败分类。"""
+    from app.agent.trace import load_all_traces
+    from app.agent.failure_taxonomy import (
+        compute_failure_distribution,
+        format_failure_report,
+        annotate_trace_with_failures,
+    )
+
+    traces = load_all_traces(limit=200)
+    # 对旧 trace 注入 failure_codes
+    annotated = [annotate_trace_with_failures(t) for t in traces]
+    dist = compute_failure_distribution(annotated)
+    if dist.get("failure_rate", 0) > 0:
+        print(format_failure_report(dist))
+    else:
+        print("  ✅ 近期运行无失败码触发")
+
+
+def cmd_report():
+    """一键捕获不满意的 Agent 输出到 candidate 评测集。"""
+    from app.agent.capture import (
+        capture_from_trace,
+        print_case_preview,
+        prompt_note,
+        prompt_tags,
+        save_candidate,
+    )
+
+    print("📸 正在捕获最近一次 Agent 交互...")
+    result = capture_from_trace(
+        tags=prompt_tags(),
+        note=prompt_note(),
+    )
+
+    if not result.get("success"):
+        print(f"❌ 捕获失败: {result.get('error', '未知错误')}")
+        return
+
+    case = result["case"]
+    print_case_preview(case)
+
+    try:
+        ok = input(f"\n  💾 保存到 candidate 评测集？(Y/n) > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ok = "y"
+
+    if ok in ("", "y", "yes"):
+        path = save_candidate(case)
+        print(f"  ✅ 已保存: {path}")
+        print(f"  💡 后续晋升: agent eval --tier candidate; 然后补充字段晋升至 golden")
+    else:
+        print("  ⏭️  已取消")
+
+
+def cmd_persona():
+    """分析用户性格并更新对话风格。"""
+    from app.agent.agent_data_service import read_memory, format_episodic
+    from app.agent.persona import analyze_persona, save_persona, build_style_instruction, PERSONA_DIMENSIONS
+    from app.obsidian import vault
+
+    print("🔍 正在分析用户性格...")
+
+    # 读取日记
+    try:
+        diary_str = vault.read_folder("diaries", max_files=10, max_chars_per_file=3000)
+    except Exception:
+        diary_str = ""
+
+    # 读取记忆
+    episodic_text = format_episodic(limit=30)
+
+    # 分析
+    persona = analyze_persona(diaries=diary_str, memories=[episodic_text])
+    save_persona(persona)
+
+    print("\n" + "=" * 44)
+    print("🧠 性格分析结果")
+    for dim, tag in persona.items():
+        desc = PERSONA_DIMENSIONS.get(dim, {}).get("description", dim)
+        print(f"  {desc:12s} → {tag}")
+    print()
+    style = build_style_instruction(persona)
+    print("📝 风格指令:")
+    for line in style.split("\n"):
+        print(f"  {line}")
+    print()
+    print("✅ 已保存，下次对话生效")
+
     """用 LLM 对评测结果做深度评判。"""
     import json
     import re
@@ -448,6 +626,10 @@ def print_help():
     eval --score                                          多维评分卡（不跑测试）
     eval --all                                            所有层级
     eval --tier golden --llm                              带 LLM Grader
+    eval --all                                             所有层级 + 失败分析
+    eval --failure                                        独立失败分析报告
+    persona                                              分析用户性格并更新对话风格
+    report                                               一键捕获不满意的输出到 candidate 评测集
     ui                   启动终端 UI
     status               系统状态
     help                 显示帮助
@@ -478,6 +660,8 @@ def main():
         "memory": lambda: cmd_memory(" ".join(sys.argv[2:])),
         "ui": lambda: _cmd_ui(),
         "eval": cmd_eval,
+        "persona": cmd_persona,
+        "report": cmd_report,
         "status": cmd_status,
         "help": print_help,
     }

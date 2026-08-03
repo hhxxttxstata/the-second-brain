@@ -1,0 +1,27 @@
+[
+  {
+    "id": "candidate-captured-20260802133108",
+    "intent": "修改claude.md-工具可用性",
+    "input": "我看到obsidian的claude.md文件还没有写好plan的文件夹地图，补上去",
+    "expected_route": "chatbot",
+    "stage": "candidate",
+    "tags": ["routing", "vault_read", "vault_write"],
+    "note": "read_file 工具存在 bug，无法读取任何文件内容（无论传什么参数都报错）",
+    "created_at": "2026-08-02",
+    "known_issue": "用户反馈该回答不满足预期。trace: trace_9a09dcfc40",
+    "trace_ref": "trace_9a09dcfc40",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "成功读取 claude.md 现有内容（read_file 调用成功）",
+      "在 claude.md 中补充 plan 文件夹地图"
+    ],
+    "forbidden_actions": [
+      "read_file 调用报参数错误",
+      "在未读取现有内容的情况下直接覆盖写 claude.md",
+      "往 claude.md 追加无关测试内容"
+    ],
+    "fixture_needed": {
+      "vault": "需有 claude.md 且内容含文件夹地图章节"
+    }
+  }
+]

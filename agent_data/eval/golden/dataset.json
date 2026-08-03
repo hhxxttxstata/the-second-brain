@@ -1,0 +1,590 @@
+[
+  {
+    "intent": "档案查询",
+    "input": "我的背景是什么？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "profile_used"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "回答基于 profile.json 的内容（非编造）"
+    ],
+    "forbidden_actions": [
+      "回答'我查不到你的信息'（实际有 profile）"
+    ],
+    "fixture_needed": {
+      "profile": "需预置用户信息（如塔塔，26岁，医学影像算法方向）"
+    },
+    "tags": [
+      "routing"
+    ],
+    "id": "routing-我的背景是什么？",
+    "created_at": "2026-07-26",
+    "substage": "dataset"
+  },
+  {
+    "intent": "知识搜索",
+    "input": "帮我搜一下关于RAG的笔记",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "vault_searched"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "返回至少一篇 vault 中的 RAG 相关笔记摘要"
+    ],
+    "forbidden_actions": [
+      "不搜索 vault 直接凭记忆回答",
+      "返回无关内容"
+    ],
+    "fixture_needed": {
+      "vault": "需有 RAG 相关的笔记文件"
+    },
+    "tags": [
+      "routing",
+      "vault_search",
+      "external_api"
+    ],
+    "id": "routing-帮我搜一下关于RAG的笔记",
+    "created_at": "2026-07-26",
+    "substage": "dataset"
+  },
+  {
+    "intent": "基金查询",
+    "input": "我的基金今天怎么样了？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_used"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "回答包含基金代码和今日净值信息"
+    ],
+    "forbidden_actions": [
+      "回答'我查不到你的持仓'（实际有 task_memory）"
+    ],
+    "fixture_needed": {
+      "task_memory": "需预置用户持仓的四只基金信息"
+    },
+    "tags": [
+      "routing",
+      "fixture_dependent"
+    ],
+    "id": "routing-我的基金今天怎么样了？",
+    "created_at": "2026-07-26",
+    "substage": "dataset"
+  },
+  {
+    "intent": "矛盾指令",
+    "input": "我放弃2027秋招了，把那个 todo 删掉。等等，我还是想要个保底 offer，再加一个'2027秋招offer'吧，优先级设为最低。",
+    "expected_route": "plan",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "contradiction_handled"
+    ],
+    "required_outcomes": [
+      "路由到 plan",
+      "理解用户最终意图（保留保底 offer）",
+      "新增 todo 优先级设为最低"
+    ],
+    "forbidden_actions": [
+      "只执行前一半指令（删除）忽略后半",
+      "路由到 chatbot 只做口头上回复"
+    ],
+    "fixture_needed": {
+      "task_memory": "需预置一条 '2027秋招offer' todo"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "contradiction"
+    ],
+    "id": "contradiction-task-delete-recreate",
+    "created_at": "2026-07-26",
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "BC7 - 任务去重失败/路由错误"
+  },
+  {
+    "intent": "强制写 todo",
+    "input": "强制写入一条新的 todo：'搜索RAG笔记'。不要检查是否重复，不要更新旧的，直接作为一条全新的独立任务写入。",
+    "expected_route": "plan",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "dedup_bypassed"
+    ],
+    "required_outcomes": [
+      "路由到 plan",
+      "写入一条全新的 todo（即使有同名也独立写入）",
+      "不修改任何已有 todo"
+    ],
+    "forbidden_actions": [
+      "路由到 memory 存为 episodic",
+      "合并/去重本条 todo",
+      "修改已有的同名 todo"
+    ],
+    "fixture_needed": {
+      "task_memory": "可选：预置一条同名 todo 验证不修改"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "contradiction"
+    ],
+    "id": "contradiction-force-write-dedup-bypass",
+    "created_at": "2026-07-26",
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "BC7 - 任务操作路由错误"
+  },
+  {
+    "intent": "多步任务操作",
+    "input": "Add a new task: 2027 Autumn Recruitment Offer。对了，我之前是不是有个叫'2027秋招offer'的待办？如果有的话，把它们 merge 一下，状态改成'进行中'。",
+    "expected_route": "plan",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "task_merged"
+    ],
+    "required_outcomes": [
+      "路由到 plan",
+      "合并重复任务（同标题）",
+      "状态改为 进行中"
+    ],
+    "forbidden_actions": [
+      "创建重复任务不合并",
+      "丢弃用户输入的 merge 意图"
+    ],
+    "fixture_needed": {
+      "task_memory": "需预置一条 '2027秋招offer' todo（status=pending）"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "contradiction"
+    ],
+    "id": "multi-step-task-merge",
+    "created_at": "2026-07-28",
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "BC7 - 任务去重失败/路由错误"
+  },
+  {
+    "intent": "综合写计划",
+    "input": "结合我个人的 Profile（我是谁），以及我最近的日记，还有我所有的 Todo，给我写一份明天的计划。",
+    "expected_route": "plan",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "multi_source"
+    ],
+    "required_outcomes": [
+      "路由到 plan",
+      "输出格式为计划列表（含标题/优先级）",
+      "计划内容涉及至少一个个人目标（来自 profile）",
+      "计划内容涉及至少一个待办（来自 task_memory）"
+    ],
+    "forbidden_actions": [
+      "输出计划但内容为空或与用户无关",
+      "只使用了对话上下文而未读取 vault/memory"
+    ],
+    "fixture_needed": {
+      "profile": "需预置用户背景（如塔塔，26岁，AI方向）",
+      "task_memory": "需有至少一条待办"
+    },
+    "tags": [
+      "routing",
+      "planning",
+      "multi_source"
+    ],
+    "id": "comprehensive-plan-with-todo",
+    "created_at": "2026-07-28",
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "BC7 - 任务关键词误判"
+  },
+  {
+    "intent": "跨会话延续-隐式同意",
+    "input": "继续吧。",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "cross_session_resume"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "找到当前唯一的 pending task 并恢复执行",
+      "不需要让用户重复任务内容"
+    ],
+    "forbidden_actions": [
+      "路由到其他 agent",
+      "要求用户重新描述任务",
+      "回答'我没有上下文'"
+    ],
+    "fixture_needed": {
+      "pending_approval": "需有一个待审批操作（handoff/task_001）",
+      "session": "需有上一会话中包含提案的记录"
+    },
+    "tags": [
+      "routing",
+      "cross_session",
+      "approval"
+    ],
+    "id": "cross-session-resume-implicit-consent",
+    "created_at": "2026-07-30",
+    "substage": "dataset"
+  },
+  {
+    "intent": "审批-精确部分批准",
+    "input": "我同意清理缓存那个操作，但重置密码那个我拒绝。",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "partial_approval"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "批准'清理缓存'任务并执行",
+      "拒绝'重置密码'任务并标记为 cancelled"
+    ],
+    "forbidden_actions": [
+      "把两条任务都执行或都拒绝",
+      "不区分两个任务的批准状态"
+    ],
+    "fixture_needed": {
+      "handoff": "需有两条待审批 task handoff：'清理缓存'和'重置密码'"
+    },
+    "tags": [
+      "routing",
+      "approval",
+      "memory_write"
+    ],
+    "id": "approval-partial-approve-reject",
+    "created_at": "2026-07-30",
+    "substage": "dataset",
+    "note": "审批操作由 chatbot 通过 update_task_status 处理（与跨会话延续-隐式同意一致），不强制走 plan"
+  },
+  {
+    "intent": "情绪与偏好区分",
+    "input": "我今天头好痛，不想看长篇大论，给我简单总结一下就行。对了，以后所有的代码示例都默认用 Python。",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_write_precision"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "将'代码默认用 Python'作为偏好记忆持久化（或确认已持久化不重复写）",
+      "回应简洁不包含长篇内容"
+    ],
+    "forbidden_actions": [
+      "把'头痛'作为长期偏好记忆写入",
+      "把'不想看长篇大论'作为长期偏好记忆写入",
+      "忽略 Python 偏好指令"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "memory_write",
+      "profile"
+    ],
+    "id": "memory-write-precision-emotion-vs-preference",
+    "created_at": "2026-07-30",
+    "substage": "dataset",
+    "note": "Python 偏好必须持久化；若已存在则确认即可，不必重复写入。头痛绝不能作为长期偏好写入。"
+  },
+  {
+    "intent": "记忆更新-冲突覆盖",
+    "input": "我之前跟你说我每天晚上健身，现在改了，以后都是早上 7 点去。",
+    "expected_route": "memory",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_update"
+    ],
+    "required_outcomes": [
+      "路由到 memory",
+      "写入一条新的'早上健身'记忆",
+      "旧记忆'晚上健身'标记为 superseded"
+    ],
+    "forbidden_actions": [
+      "同时保留两条冲突记忆",
+      "只保存新记忆而不标记旧记忆"
+    ],
+    "fixture_needed": {
+      "memory": "需有'用户每天晚上健身'的旧记忆"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "contradiction"
+    ],
+    "id": "memory-update-conflict-resolve",
+    "created_at": "2026-07-30",
+    "substage": "dataset"
+  },
+  {
+    "intent": "记忆溯源",
+    "input": "你为什么觉得我不吃辣？是我哪次聊天明确告诉你的，还是你自己根据我点菜记录猜的？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_source_tracing"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "搜索记忆并告知来源（明确告知/推断/猜测）",
+      "提供时间戳或会话引用"
+    ],
+    "forbidden_actions": [
+      "编造来源信息",
+      "回答'我不记得了'（实际有记忆）"
+    ],
+    "fixture_needed": {
+      "memory": "需有'用户不吃辣'的相关记忆，含 source_session_id"
+    },
+    "tags": [
+      "routing",
+      "memory_read",
+      "hallucination"
+    ],
+    "id": "memory-source-tracing-explain",
+    "created_at": "2026-07-30",
+    "substage": "dataset"
+  },
+  {
+    "intent": "工作流与画像隔离",
+    "input": "我正在审批那个报销单，先放着一会再说。另外，我换了新手机号是 13812345678，你记一下。",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "workflow_isolation"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "将新手机号写入 profile 记忆",
+      "将报销单审批状态挂起"
+    ],
+    "forbidden_actions": [
+      "在 profile 中记一条'用户正在审批报销单'",
+      "忽略手机号更新",
+      "丢失报销单挂起状态"
+    ],
+    "fixture_needed": {
+      "handoff": "需有活跃的'报销单审批'审批任务",
+      "profile": "profile 中需有旧手机号 13912345678（与用户新号不同）"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "profile"
+    ],
+    "id": "memory-workflow-isolation",
+    "created_at": "2026-07-30",
+    "substage": "dataset"
+  },
+  {
+    "intent": "对话提炼语义记忆",
+    "input": "总结一下我们这两天聊的关于前端框架选型的结论，把它作为核心知识库记下来，以后新项目直接参考这个标准。",
+    "expected_route": "memory",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "semantic_extraction"
+    ],
+    "required_outcomes": [
+      "路由到 memory",
+      "写入一条结构化的语义记忆（memory_type=semantic_knowledge，不是'用户让我总结'）",
+      "包含提炼后的技术选型标准"
+    ],
+    "forbidden_actions": [
+      "只存一条'用户让我总结前端框架'的动作记忆",
+      "不提炼直接复读对话"
+    ],
+    "fixture_needed": {
+      "session": "需有关于前端框架选型讨论的会话历史"
+    },
+    "tags": [
+      "routing",
+      "memory_write",
+      "conversation"
+    ],
+    "id": "memory-semantic-extraction-knowledge",
+    "created_at": "2026-07-30",
+    "substage": "dataset",
+    "note": "语义提炼由 memory agent 完成（semantic_knowledge 类型），非 chatbot"
+  },
+  {
+    "input": "我哪里说了要去北京？我的obsidian被污染了？我根本没说过要去，你把这一条规划去掉。",
+    "tags": [
+      "routing",
+      "vault_search",
+      "memory_write"
+    ],
+    "ablation_trigger": "disable_vault_search",
+    "intent": "质疑规划来源并要求删除",
+    "id": "routing-beijing-plan-contradiction",
+    "created_at": "2026-07-27",
+    "stage": "golden",
+    "expected_route": "chatbot",
+    "checks": [
+      "route",
+      "vault_checked",
+      "no_false_plan"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot（而非 plan）",
+      "先搜索 vault/memory 确认'去北京'的来源",
+      "向用户说明'去北京'的来源（如有）或承认是误生成"
+    ],
+    "forbidden_actions": [
+      "路由到 plan 重新生成计划（掩盖问题）",
+      "不检查 vault 就声称'已删除'"
+    ],
+    "fixture_needed": {
+      "task_memory": "需有规划项包含'去北京'"
+    },
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "candidate 捕获"
+  },
+  {
+    "id": "candidate-captured-20260729132324",
+    "intent": "整理笔记-vault改写",
+    "input": "我的笔记有点杂乱无章，为我整理一下笔记，不要删主要内容，可以为了逻辑顺畅增加点内容",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "tags": [
+      "routing",
+      "vault_search",
+      "vault_write",
+      "planning"
+    ],
+    "created_at": "2026-07-29",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "实际读取 vault 中的笔记文件（search_vault/read_folder/read_file 至少调用一次）",
+      "实际改写/整理至少一个笔记文件（调用 vault_write 或 write_file）"
+    ],
+    "forbidden_actions": [
+      "只口头承诺'我可以整理'但没有任何 vault 读写动作",
+      "调用 read_file 后报参数错误（工具必须可用）"
+    ],
+    "fixture_needed": {
+      "vault": "需有至少 1 个 notes/ 下的笔记文件"
+    },
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "用户反馈该回答不满足预期。trace: trace_863a2875cd"
+  },
+  {
+    "id": "candidate-captured-20260729175856",
+    "intent": "跨会话执行-同意后执行",
+    "input": "同意，保留notes/版本作为基础",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "tags": [
+      "routing",
+      "cross_session",
+      "vault_write"
+    ],
+    "created_at": "2026-07-29",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "识别出'同意'是对上一会话整理方案的确认",
+      "基于该方案实际执行 vault 写操作（整理笔记）"
+    ],
+    "forbidden_actions": [
+      "只回复'好的'但没有执行任何写操作",
+      "重新询问用户方案细节（用户已同意）"
+    ],
+    "fixture_needed": {
+      "session": "需有上一会话中 agent 提出整理笔记方案的记录",
+      "vault": "需有 notes/ 下的笔记文件可整理"
+    },
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "用户反馈该回答不满足预期。trace: trace_36433b3c9d"
+  },
+  {
+    "id": "candidate-captured-20260802133108",
+    "intent": "修改claude.md-工具可用性",
+    "input": "我看到obsidian的claude.md文件还没有写好plan的文件夹地图，补上去",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "tags": [
+      "routing",
+      "vault_read",
+      "vault_write"
+    ],
+    "created_at": "2026-08-02",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "成功读取 claude.md 现有内容（read_file 调用成功）",
+      "在 claude.md 中补充 plan 文件夹地图"
+    ],
+    "forbidden_actions": [
+      "read_file 调用报参数错误",
+      "在未读取现有内容的情况下直接覆盖写 claude.md",
+      "往 claude.md 追加无关测试内容"
+    ],
+    "fixture_needed": {
+      "vault": "需有 claude.md 且内容含文件夹地图章节"
+    },
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "用户反馈该回答不满足预期。trace: trace_9a09dcfc40"
+  },
+  {
+    "intent": "日记检索_工具调用异常",
+    "input": "我最近写了什么日记？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "vault_read_ok",
+      "tool_error_free",
+      "output_based_on_content"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "成功调用 search_vault / read_folder / read_file 之一读取 vault 日记内容",
+      "输出基于真实日记内容（非编造）",
+      "工具调用无异常（tool_calls 非空且 success=True）"
+    ],
+    "forbidden_actions": [
+      "声称'工具调用出现参数问题'但实际工具未在 trace 中被调用",
+      "输出'日记是空白的'但 vault 中有实际内容",
+      "只用记忆系统回答而不查 vault",
+      "编造日记内容"
+    ],
+    "fixture_needed": {
+      "vault": "需有至少3篇近期日记，且非空白"
+    },
+    "tags": [
+      "routing",
+      "vault_search",
+      "tool_reliability",
+      "hallucination"
+    ],
+    "id": "candidate-diary-retrieval-tool-error",
+    "created_at": "2026-07-28",
+    "substage": "dataset",
+    "regression_badge": true,
+    "badcase_from": "agent 声称工具调用出现参数问题，但 trace 中 tool_calls=[]，实际未发起任何 vault 读取。"
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "candidate-captured-20260729175856",
+    "intent": "跨会话执行-同意后执行",
+    "input": "同意，保留notes/版本作为基础",
+    "expected_route": "chatbot",
+    "stage": "candidate",
+    "tags": ["routing", "cross_session", "vault_write"],
+    "note": "我要agent整理笔记，它给出了一个方案让我同意，下一个会话我同意之后让他干，但它还是没有干",
+    "created_at": "2026-07-29",
+    "known_issue": "用户反馈该回答不满足预期。trace: trace_36433b3c9d",
+    "trace_ref": "trace_36433b3c9d",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "识别出'同意'是对上一会话整理方案的确认",
+      "基于该方案实际执行 vault 写操作（整理笔记）"
+    ],
+    "forbidden_actions": [
+      "只回复'好的'但没有执行任何写操作",
+      "重新询问用户方案细节（用户已同意）"
+    ],
+    "fixture_needed": {
+      "session": "需有上一会话中 agent 提出整理笔记方案的记录",
+      "vault": "需有 notes/ 下的笔记文件可整理"
+    }
+  }
+]

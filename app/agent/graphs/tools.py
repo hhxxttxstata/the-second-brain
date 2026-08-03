@@ -7,7 +7,8 @@ graph tools.py → 工具代理（不直接写逻辑，统一走 ToolRegistry）
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import time
+from typing import Any, Optional
 
 from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
@@ -102,6 +103,38 @@ async def execute_tool(name: str, params: dict[str, Any]) -> dict[str, Any]:
 
 # ── 生成 LangChain tool list ──
 
+def _schema_to_pydantic(model_name: str, schema: dict) -> type | None:
+    """将 JSON Schema 转为 Pydantic model，供 StructuredTool 使用。"""
+    if not schema or not isinstance(schema, dict):
+        return None
+    try:
+        from pydantic import BaseModel, Field, create_model
+
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        fields = {}
+        for prop_name, prop in properties.items():
+            python_type = str  # default
+            json_type = prop.get("type", "string")
+            type_map = {
+                "string": str, "integer": int, "number": float,
+                "boolean": bool, "array": list, "object": dict,
+            }
+            python_type = type_map.get(json_type, str)
+            desc = prop.get("description", "")
+            default = ... if prop_name in required else None
+            if default is not None:
+                fields[prop_name] = (Optional[python_type], Field(default=None, description=desc))
+            else:
+                fields[prop_name] = (python_type, Field(..., description=desc))
+
+        if fields:
+            return create_model(model_name, **fields)
+    except Exception:
+        pass
+    return None
+
+
 def build_agent_tools() -> list:
     """从 ToolRegistry 动态生成完整的工具列表（native + MCP）。
 
@@ -118,6 +151,10 @@ def build_agent_tools() -> list:
         description = t_info.get("description", "")
         schema = t_info.get("input_schema", {})
         source = "MCP" if "[MCP/" in description else "native"
+
+        # 从 input_schema 动态生成 Pydantic args_schema
+        # 这样 StructuredTool 能正确暴露参数给 LLM，而非退化为 kwargs
+        args_schema = _schema_to_pydantic(name, schema) if schema else None
 
         # 同步适配器函数 — 由 StructuredTool 同步执行
         def _make_sync_fn(t_name: str = name, t_desc: str = description):
@@ -142,7 +179,7 @@ def build_agent_tools() -> list:
                 func=sync_fn,
                 name=name,
                 description=description,
-                args_schema=None,
+                args_schema=args_schema,
             ))
             if source == "MCP":
                 mcp_count += 1

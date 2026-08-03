@@ -1,0 +1,112 @@
+[
+  {
+    "id": "memory-write-precision-01",
+    "created_at": "2026-07-30",
+    "input": "我今天头好痛，不想看长篇大论，给我简单总结一下就行。对了，以后所有的代码示例都默认用 Python。",
+    "expected_route": ["Memory Agent", "Chat Context"],
+    "tags": ["memory_write_precision", "transient_vs_longterm", "profile_memory"],
+    "fixture_needed": false,
+    "ablation_trigger": "disable_transient_filtering",
+    "intent": "在同一句话中区分“瞬时状态/情绪”与“长期偏好”，并分别处理。",
+    "note": "测试 Memory Write Precision。Agent 必须将“代码用Python”写入 Profile Memory，但绝不能把“头痛”或“不想看长篇大论”作为长期偏好持久化，后者只能作用于当前 Session。"
+  },
+  {
+    "id": "memory-abstention-02",
+    "created_at": "2026-07-30",
+    "input": "今天和李四开会聊了下半年的预算，看他那架势，感觉他可能是财务部的负责人。",
+    "expected_route": ["Memory Agent"],
+    "tags": ["memory_abstention_accuracy", "episodic_memory", "unverified_inference"],
+    "fixture_needed": false,
+    "ablation_trigger": "force_entity_extraction",
+    "intent": "记录会议事件，但拒绝将用户的主观猜测作为事实实体记忆写入。",
+    "note": "测试 Memory Abstention Accuracy。必须生成一条 Episodic Memory (关于预算会议)，但不能生成 Entity Memory (李四=财务负责人)，或者即使生成，其 confidence 必须极低且标记为猜测。"
+  },
+  {
+    "id": "memory-update-accuracy-03",
+    "created_at": "2026-07-30",
+    "input": "我之前跟你说我每天晚上健身，现在改了，以后都是早上 7 点去。",
+    "expected_route": ["Memory Agent"],
+    "tags": ["memory_update_accuracy", "temporal_reasoning", "conflict_resolution"],
+    "fixture_needed": "Requires existing Profile Memory: '用户每天晚上健身' (status=active).",
+    "ablation_trigger": "disable_memory_supersede",
+    "intent": "处理直接冲突的新旧记忆，测试状态覆盖与时态更新。",
+    "note": "测试 Memory Update Accuracy。系统不能保留两条冲突的记忆。必须找到旧记忆，将其 status 改为 inactive，并新建一条早上健身的记忆，同时记录 supersedes 指向旧记忆 ID。"
+  },
+  {
+    "id": "memory-source-tracing-04",
+    "created_at": "2026-07-30",
+    "input": "你为什么觉得我不吃辣？是我哪次聊天明确告诉你的，还是你自己根据我点菜记录猜的？",
+    "expected_route": ["Memory Agent", "Context Retrieval"],
+    "tags": ["memory_recall", "source_tracing", "explainability"],
+    "fixture_needed": "Requires existing Profile Memory about '不吃辣' with valid source_session_id and confidence score.",
+    "ablation_trigger": "disable_provenance_metadata",
+    "intent": "要求 Agent 调取记忆的元数据（来源、时间、置信度）并向用户解释。",
+    "note": "测试 Memory Recall 和 Source Tracing。Agent 必须读取底层 JSON 的 source_session_id 和推断逻辑，准确回答“是在某年某月某次对话中您明确提出的”或“是根据您的历史行为推断的”。"
+  },
+  {
+    "id": "memory-meta-policy-05",
+    "created_at": "2026-07-30",
+    "input": "从现在起，绝对不要记录任何关于我家庭成员的名字和信息，把之前记的我女儿的信息也全删了。",
+    "expected_route": ["Memory Agent"],
+    "tags": ["memory_write_precision", "privacy_policy", "batch_deletion"],
+    "fixture_needed": "Requires existing Entity Memories about user's family members.",
+    "ablation_trigger": "disable_meta_policy_update",
+    "intent": "更新全局记忆写入策略（Privacy），并执行历史数据的回溯清理。",
+    "note": "测试 Memory Write Precision 和 Deleted Memory Reappearance Rate。必须触发两件事：1. 写入一条高优先级的 Meta-Policy 阻止未来写入；2. 批量将历史家庭成员记忆标记为 deleted。"
+  },
+  {
+    "id": "memory-semantic-extraction-06",
+    "created_at": "2026-07-30",
+    "input": "总结一下我们这两天聊的关于前端框架选型的结论，把它作为核心知识库记下来，以后新项目直接参考这个标准。",
+    "expected_route": ["Memory Agent", "Semantic Extraction"],
+    "tags": ["semantic_memory", "knowledge_synthesis", "cross_session_recall"],
+    "fixture_needed": "Requires dense chat history in recent sessions discussing React vs Vue vs Angular.",
+    "ablation_trigger": "disable_semantic_synthesis",
+    "intent": "将零散的对话历史（Episodic/Chat）提炼并升华为结构化的语义记忆（Semantic Memory）。",
+    "note": "测试 Memory Write Precision。Agent 不应只存一条“用户让我总结前端框架”的动作，而是要生成一条 memory_type='semantic_knowledge' 的记录，包含提炼后的技术选型标准。"
+  },
+  {
+    "id": "memory-workflow-isolation-07",
+    "created_at": "2026-07-30",
+    "input": "我正在审批那个报销单，先放着一会再说。另外，我换了新手机号是 13812345678，你记一下。",
+    "expected_route": ["Workflow Engine", "Memory Agent"],
+    "tags": ["memory_write_precision", "workflow_isolation", "profile_memory"],
+    "fixture_needed": "Requires an active Workflow/Task for '报销单审批'.",
+    "ablation_trigger": "mix_workflow_and_profile_memory",
+    "intent": "在同一指令中，隔离处理工作流状态（Workflow Memory）与长期人物画像（Profile Memory）。",
+    "note": "测试 Memory Write Precision。系统必须将手机号更新到 Profile Memory，同时将报销单状态挂起在 Workflow Memory 中。绝不能在人物画像里记一条“用户正在审批报销单”。"
+  },
+  {
+    "id": "memory-entity-cascade-delete-08",
+    "created_at": "2026-07-30",
+    "input": "我和王五绝交了，把你脑子里关于他所有的记录、我们一起做过的项目、他的喜好，全部彻底抹掉。",
+    "expected_route": ["Memory Agent"],
+    "tags": ["entity_memory", "cascade_deletion", "deleted_memory_reappearance"],
+    "fixture_needed": "Requires multiple memories linked to '王五': Entity (his profile), Episodic (past projects together).",
+    "ablation_trigger": "disable_graph_cascade_delete",
+    "intent": "基于特定实体（Entity），执行跨类型的级联删除（Cascade Delete）。",
+    "note": "测试 Deleted Memory Reappearance Rate。系统必须通过知识图谱或标签，找到所有 subject 或 content 包含王五的 Profile、Entity、Episodic 记忆，并全部置为 inactive/deleted。"
+  },
+  {
+    "id": "memory-temporal-ttl-09",
+    "created_at": "2026-07-30",
+    "input": "接下来的两周我都在出差，这期间给我推的新闻只保留标题。两周后恢复正常。",
+    "expected_route": ["Memory Agent"],
+    "tags": ["temporal_reasoning_accuracy", "ttl_memory", "conditional_preference"],
+    "fixture_needed": false,
+    "ablation_trigger": "disable_memory_ttl",
+    "intent": "写入一条带有明确过期时间（TTL / valid_to）的短期偏好记忆。",
+    "note": "测试 Temporal Reasoning Accuracy。写入的 JSON 记录中，`valid_from` 必须是当前时间，`valid_to` 必须精确计算为 14 天后。系统不能将其作为永久偏好。"
+  },
+  {
+    "id": "memory-deleted-reappearance-10",
+    "created_at": "2026-07-30",
+    "input": "给我推荐个今晚的菜谱，随便什么都行。",
+    "expected_route": ["Tool Execution", "Chat Context"],
+    "tags": ["deleted_memory_reappearance", "memory_recall", "hallucination"],
+    "fixture_needed": "Requires a previously DELETED Profile Memory: '用户极度讨厌香菜' (status=deleted/inactive).",
+    "ablation_trigger": "force_recall_inactive_memories",
+    "intent": "验证已删除或已失效的记忆是否会被错误召回并影响当前决策。",
+    "note": "测试 Deleted Memory Reappearance Rate。Agent 在生成菜谱时，底层检索系统绝不能召回 status=deleted 的香菜记忆。如果 Agent 回复“因为你不吃香菜，所以我推荐...”，则直接判定为严重 Fail。"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "candidate-captured-20260729132324",
+    "intent": "整理笔记-vault改写",
+    "input": "我的笔记有点杂乱无章，为我整理一下笔记，不要删主要内容，可以为了逻辑顺畅增加点内容",
+    "expected_route": "chatbot",
+    "stage": "candidate",
+    "tags": ["routing", "vault_search", "vault_write", "planning"],
+    "note": "需要整理笔记，但是没有行动",
+    "created_at": "2026-07-29",
+    "known_issue": "用户反馈该回答不满足预期。trace: trace_863a2875cd",
+    "trace_ref": "trace_863a2875cd",
+    "required_outcomes": [
+      "路由到 chatbot",
+      "实际读取 vault 中的笔记文件（search_vault/read_folder/read_file 至少调用一次）",
+      "实际改写/整理至少一个笔记文件（调用 vault_write 或 write_file）"
+    ],
+    "forbidden_actions": [
+      "只口头承诺'我可以整理'但没有任何 vault 读写动作",
+      "调用 read_file 后报参数错误（工具必须可用）"
+    ],
+    "fixture_needed": {
+      "vault": "需有至少 1 个 notes/ 下的笔记文件"
+    }
+  }
+]

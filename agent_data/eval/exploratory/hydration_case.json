@@ -1,0 +1,112 @@
+[
+  {
+    "id": "cross-session-resume-01",
+    "created_at": "2026-07-28",
+    "input": "继续吧。",
+    "expected_route": ["Workflow Engine", "Tool Execution"],
+    "tags": ["cross_session_resume", "implicit_approval", "happy_path"],
+    "fixture_needed": "Requires exactly 1 pending 'approval' (e.g., Send Email) linked to the user's current 'chat_session' context.",
+    "ablation_trigger": "disable_pending_task_auto_bind",
+    "intent": "在新会话中，通过极简的隐式同意指令，恢复唯一挂起的任务。",
+    "note": "测试 Cross-Session Resume Success。Agent 必须自动找到唯一的 pending task 并从 checkpoint 恢复执行，不能要求用户重复任务内容。"
+  },
+  {
+    "id": "approval-binding-02",
+    "created_at": "2026-07-28",
+    "input": "同意。",
+    "expected_route": ["Workflow Engine", "Clarification Prompt"],
+    "tags": ["approval_binding", "ambiguity_resolution", "multi_pending"],
+    "fixture_needed": "Requires 2 or more pending 'approval' records (e.g., 'Delete File' and 'Send Message').",
+    "ablation_trigger": "force_execute_latest_approval",
+    "intent": "存在多个待审批任务时，用户给出模糊同意，测试系统是否会请求澄清。",
+    "note": "测试 Approval Binding Accuracy。系统绝不能盲目执行最新或所有任务，必须列出 pending tasks 让用户选择具体的 approval_id 或任务名。"
+  },
+  {
+    "id": "approval-binding-03",
+    "created_at": "2026-07-28",
+    "input": "我同意清理缓存那个操作，但重置密码那个我拒绝。",
+    "expected_route": ["Workflow Engine", "Tool Execution"],
+    "tags": ["approval_binding", "partial_approval", "state_routing"],
+    "fixture_needed": "Requires 2 pending 'approval' records: 'Clear Cache' and 'Reset Password'.",
+    "ablation_trigger": "disable_multi_intent_parsing",
+    "intent": "在单次输入中，对不同的挂起任务分别执行“同意”和“拒绝”。",
+    "note": "测试 Approval Binding Accuracy。必须准确将“同意”绑定到任务A并执行，将“拒绝”绑定到任务B并更新状态为 cancelled。"
+  },
+  {
+    "id": "stale-approval-04",
+    "created_at": "2026-07-28",
+    "input": "我同意上周那个删除数据库表的请求。",
+    "expected_route": ["Workflow Engine", "Rejection Prompt"],
+    "tags": ["stale_approval", "security", "idempotency"],
+    "fixture_needed": "Requires an 'approval' record that is either expired (TTL passed) or already executed/cancelled in a previous session.",
+    "ablation_trigger": "disable_approval_status_check",
+    "intent": "尝试批准一个已经过期或已处理的历史任务。",
+    "note": "测试 Stale Approval Execution Rate。系统必须拦截该请求，提示任务已失效，绝对不能触发重复的 tool_operation。"
+  },
+  {
+    "id": "duplicate-side-effect-05",
+    "created_at": "2026-07-28",
+    "input": "同意执行。",
+    "expected_route": ["Workflow Engine"],
+    "tags": ["duplicate_side_effect", "concurrent_session_race"],
+    "fixture_needed": "Requires a task that was JUST approved in Session A (status=executing/completed), user sends '同意' in Session B simultaneously.",
+    "ablation_trigger": "disable_optimistic_locking",
+    "intent": "模拟并发或重复同意，测试幂等性保护。",
+    "note": "测试 Duplicate Side-Effect Rate。底层必须有乐观锁或状态机校验，防止同一个 checkpoint 被重复 load 并执行两次敏感工具。"
+  },
+  {
+    "id": "lost-pending-action-06",
+    "created_at": "2026-07-28",
+    "input": "同意发邮件。",
+    "expected_route": ["Workflow Engine", "Tool Execution"],
+    "tags": ["lost_pending_action", "checkpoint_hydration"],
+    "fixture_needed": "Requires a pending 'approval' for sending an email, with complex 'tool_operation' args (recipient, body, attachments) stored in the checkpoint.",
+    "ablation_trigger": "drop_tool_args_on_resume",
+    "intent": "同意任务后，测试系统是否能完整恢复执行参数，而不是丢失参数导致执行失败或重新询问。",
+    "note": "测试 Lost Pending Action Rate。Agent 不能回复“好的，请问你要发给谁？”，必须直接从 checkpoint 提取 args 并调用邮件 API。"
+  },
+  {
+    "id": "parameter-override-07",
+    "created_at": "2026-07-28",
+    "input": "同意转账，但是金额改成 500 块就行，原计划是 1000 对吧？",
+    "expected_route": ["Workflow Engine", "Checkpoint Mutation", "Tool Execution"],
+    "tags": ["parameter_override", "dynamic_checkpoint", "cross_session_resume"],
+    "fixture_needed": "Requires a pending 'approval' for Transfer Money with amount=1000 in the checkpoint.",
+    "ablation_trigger": "disable_checkpoint_mutation",
+    "intent": "在同意审批的同时，动态修改挂起任务的执行参数。",
+    "note": "高阶测试。系统需要 load checkpoint，修改 `tool_operation.args.amount` 为 500，然后继续执行，而不是放弃原任务重新 plan。"
+  },
+  {
+    "id": "context-retrieval-08",
+    "created_at": "2026-07-28",
+    "input": "我刚上线，看到有个待审批任务提示，具体是干嘛的来着？",
+    "expected_route": ["Workflow Engine", "Context Retrieval"],
+    "tags": ["context_retrieval", "workflow_inspection", "read_only"],
+    "fixture_needed": "Requires 1 pending 'approval' with a detailed 'task' description and 'tool_operation' preview.",
+    "ablation_trigger": "disable_pending_task_inspection",
+    "intent": "在做出决定前，跨会话查询挂起任务的详细上下文（Checkpoint 预览）。",
+    "note": "测试系统能否正确读取并解释 pending task 的内容（如：将要调用什么工具、参数是什么），而不直接触发执行。"
+  },
+  {
+    "id": "error-handling-resume-09",
+    "created_at": "2026-07-28",
+    "input": "同意发布文章。",
+    "expected_route": ["Workflow Engine", "Tool Execution", "Error Recovery Prompt"],
+    "tags": ["error_handling", "workflow_suspension", "lost_pending_action"],
+    "fixture_needed": "Requires a pending 'approval'. The target tool MUST be mocked to throw a '500 Server Error' upon execution.",
+    "ablation_trigger": "fail_workflow_on_tool_error",
+    "intent": "恢复执行后，工具调用失败。测试工作流是否会优雅暂停并保留状态。",
+    "note": "测试 Lost Pending Action Rate。工具报错后，任务状态应变为 'failed/suspended' 而非 'completed'，允许用户稍后重试，不能丢失原任务。"
+  },
+  {
+    "id": "cross-session-rejection-10",
+    "created_at": "2026-07-28",
+    "input": "那个批量删除用户的操作太危险了，我不批，直接取消整个流程吧。",
+    "expected_route": ["Workflow Engine"],
+    "tags": ["rejection", "state_transition", "workflow_termination"],
+    "fixture_needed": "Requires a pending 'approval' for Batch Delete Users.",
+    "ablation_trigger": "disable_workflow_termination",
+    "intent": "明确拒绝审批，并要求终止整个工作流。",
+    "note": "测试跨会话的状态流转。系统必须找到对应的 approval_id，将其标记为 rejected，并将关联的 workflow/task 标记为 terminated，清理挂起状态。"
+  }
+]
