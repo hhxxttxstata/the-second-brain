@@ -97,17 +97,15 @@ def tool_audit(limit: int = 50) -> dict[str, Any]:
     return {"audit": get_registry().get_audit_log(limit=limit)}
 
 
-@router.get("/mcp/status")
-def mcp_status() -> dict[str, Any]:
-    """MCP 服务器连接状态。"""
+@router.get("/tools/status")
+def tool_status() -> dict[str, Any]:
+    """工具注册状态。"""
     from app.agent.graphs.tools import get_registry
     reg = get_registry()
-    # TODO: 实际 MCP 连接状态
     return {
-        "native_tools": len([t for t in reg.list_tools_for_llm() if t.get("source", "native") == "native"]),
-        "mcp_tools": len([t for t in reg.list_tools_for_llm() if t.get("source") == "mcp"]),
+        "native_tools": len(reg.list_tools_for_llm()),
+        "tools": [t["name"] for t in reg.list_tools_for_llm()],
         "status": "native_ready",
-        "mcp_servers_registered": len(reg._mcp_servers) if hasattr(reg, '_mcp_servers') else 0,
     }
 
 

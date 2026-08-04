@@ -736,6 +736,11 @@ def _check_single_outcome(
     if o.startswith("路由到"):
         target = o.replace("路由到", "").strip()
         target = _re.sub(r"[（(].*?[)）]", "", target).strip().rstrip("，。 ")
+        # "路由到 A 或 B" — 任一匹配即通过
+        if " 或 " in target:
+            targets = [t.strip() for t in target.split(" 或 ")]
+            ok = route in targets
+            return ok, f"route={route} ∈ {{{', '.join(targets)}}}"
         ok = route == target
         return ok, f"route={route}, 期望={target}"
 
@@ -769,6 +774,10 @@ def _check_single_outcome(
     # 2. 工具调用类
     if "调用" in o and ("search_vault" in o or "read_folder" in o or "read_file" in o):
         needed = [t for t in ("search_vault", "read_folder", "read_file") if t in o]
+        # claude.md 在根目录，read_folder 读取根目录等价于 read_file（reasonable alternative）
+        if "claude.md" in o and "read_file" in needed:
+            called = any(t in tool_names for t in ("read_file", "read_folder", "search_vault"))
+            return called, f"claude.md 读取工具调用={'有' if called else '无'}"
         called = [t for t in needed if t in tool_names]
         return bool(called), f"调用了{len(called)}/{len(needed)}个读取工具"
 

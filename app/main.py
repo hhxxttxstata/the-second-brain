@@ -11,7 +11,6 @@ from app.api.routes_agent_v2 import router as agent_v2_router
 from app.core.config import settings
 from app.core.logging import configure_logging, logger
 from app.agent.self_eval import run_self_eval, print_report
-from app.agent.graphs.tools import get_registry, ensure_mcp_started
 
 
 @asynccontextmanager
@@ -28,16 +27,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("self_eval_issue", detail=issue)
     except Exception as exc:
         logger.warning("self_eval_skipped", error=str(exc))
-
-    # 启动 MCP 服务器
-    try:
-        mcp_count = ensure_mcp_started()
-        if mcp_count > 0:
-            logger.info("mcp_started", tools=mcp_count)
-        else:
-            logger.info("mcp_async_start", note="servers will connect on first use")
-    except Exception as exc:
-        logger.warning("mcp_start_skipped", error=str(exc))
 
     yield
     logger.info("agent_shutting_down")

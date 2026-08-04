@@ -37,7 +37,7 @@ app/
 ├── obsidian/
 │   └── vault.py                # 🔑 核心：纯文件读写 Obsidian vault
 ├── tool_registry/
-│   ├── registry.py             # 工具注册中心（native + MCP）
+│   ├── registry.py             # 工具注册中心（统一 schema + 审计 + 风险分级）
 │   └── native_tools.py         # 18 个 native 工具（vault/记忆/外部/医学）
 ├── agent/
 │   ├── memory_store.py         # SQLite + FTS5 记忆存储

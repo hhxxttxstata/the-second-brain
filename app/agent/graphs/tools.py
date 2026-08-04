@@ -2,7 +2,7 @@
 
 graph tools.py → 工具代理（不直接写逻辑，统一走 ToolRegistry）
 
-工具列表现在从 ToolRegistry 动态生成，同时包含 native + MCP 工具。
+工具列表从 ToolRegistry 动态生成（全部 Native 工具）。
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from langchain_core.tools import tool
 from langchain_core.tools.structured import StructuredTool
 
 from app.core.logging import logger
-from app.tool_registry.registry import ToolRegistry, MCPServerConfig
+from app.tool_registry.registry import ToolRegistry
 
 # 全局 registry
 _registry: ToolRegistry | None = None
@@ -28,66 +28,6 @@ def get_registry() -> ToolRegistry:
         from app.tool_registry.native_tools import register_all_native_tools
         register_all_native_tools(_registry)
     return _registry
-
-
-def ensure_mcp_started() -> int:
-    """启动所有 MCP 服务器并注册工具到 registry，逐个日志 + 独立容错。
-
-    MCP 工具注册逻辑在 reg.start() 中（_register_mcp_tool），
-    这里逐个启动、独立 try/except 确保单点故障不阻塞整体。
-    """
-    import asyncio
-    reg = get_registry()
-    if reg._started:
-        mcp_count = len([t for t in reg.list_tools_for_llm()
-                         if "[MCP/" in t.get("description", "")])
-        logger.info("mcp.already_started", count=mcp_count)
-        return mcp_count
-
-    from app.tool_registry.registry import BUILTIN_MCP_SERVERS
-    for cfg in BUILTIN_MCP_SERVERS:
-        if cfg.name in ("github", "browser"):
-            logger.info("mcp.register", server=cfg.name,
-                        command=cfg.command, args=cfg.args)
-            reg.register_mcp_server(cfg)
-
-    # 逐个启动，reg.start() 内部负责 _register_mcp_tool
-    started = 0
-    for name, server in list(reg._mcp_servers.items()):
-        logger.info("mcp.starting", server=name)
-        try:
-            # reg.start() 对单个 server 调用 server.start()
-            # 但我们只需对当前 server 调用
-            ok = asyncio.run(server.start())
-            if ok:
-                # 注册该 server 的工具到 registry
-                for t in server.tools:
-                    t_name = f"{server.name}_{t.get('name', '?')}"
-                    schema = t.get("inputSchema", t.get("input_schema", {}))
-                    desc = t.get("description", server.config.description)
-                    reg._register_mcp_tool(
-                        t_name, desc, schema, server.name,
-                        server.config.risk_level,
-                        server.config.side_effects,
-                    )
-                    started += 1
-                tool_names = [t.get("name", "?") for t in server.tools]
-                logger.info("mcp.started", server=name,
-                            tools=len(server.tools),
-                            tool_names=tool_names[:5])
-            else:
-                logger.warning("mcp.start_failed", server=name)
-        except Exception as exc:
-            logger.error("mcp.start_error", server=name,
-                         error=str(exc)[:200],
-                         error_type=type(exc).__name__)
-
-    reg._started = True
-    actual_mcp = len([t for t in reg.list_tools_for_llm()
-                      if "[MCP/" in t.get("description", "")])
-    logger.info("mcp.summary", total=actual_mcp, started=started,
-                servers=len(reg._mcp_servers))
-    return actual_mcp
 
 
 def list_all_tools_for_llm() -> list[dict[str, Any]]:
@@ -136,21 +76,19 @@ def _schema_to_pydantic(model_name: str, schema: dict) -> type | None:
 
 
 def build_agent_tools() -> list:
-    """从 ToolRegistry 动态生成完整的工具列表（native + MCP）。
+    """从 ToolRegistry 动态生成完整的工具列表（全部 Native）。
 
     每工具有独立日志，失败不阻塞整体。
     """
     registry = get_registry()
     lc_tools: list = []
     native_count = 0
-    mcp_count = 0
     failed = 0
 
     for t_info in registry.list_tools_for_llm():
         name = t_info["name"]
         description = t_info.get("description", "")
         schema = t_info.get("input_schema", {})
-        source = "MCP" if "[MCP/" in description else "native"
 
         # 从 input_schema 动态生成 Pydantic args_schema
         # 这样 StructuredTool 能正确暴露参数给 LLM，而非退化为 kwargs
@@ -181,17 +119,14 @@ def build_agent_tools() -> list:
                 description=description,
                 args_schema=args_schema,
             ))
-            if source == "MCP":
-                mcp_count += 1
-            else:
-                native_count += 1
+            native_count += 1
         except Exception as exc:
             failed += 1
             logger.error("tool.build_failed", tool=name,
-                         error=str(exc)[:200], source=source)
+                         error=str(exc)[:200])
 
     logger.info("tools.build_complete",
-                native=native_count, mcp=mcp_count,
+                native=native_count,
                 failed=failed, total=len(lc_tools))
 
     return lc_tools
@@ -276,20 +211,15 @@ _agent_tools_cache: list | None = None
 
 
 def get_agent_tools() -> list:
-    """懒加载 AGENT_TOOLS，首次调用时触发 MCP 启动 + 动态生成。
-
-    MCP 启动失败不阻塞——确保 native 工具始终可用。
-    """
+    """懒加载 AGENT_TOOLS，首次调用时动态生成。"""
     global _agent_tools_cache
     if _agent_tools_cache is None:
-        # 必须先启动 MCP，再构建工具列表
-        ensure_mcp_started()
         _agent_tools_cache = build_agent_tools()
     return _agent_tools_cache
 
 
 def reset_agent_tools_cache() -> None:
-    """重置缓存（用于测试 / MCP 重连后）。"""
+    """重置缓存（用于测试）。"""
     global _agent_tools_cache
     _agent_tools_cache = None
 
