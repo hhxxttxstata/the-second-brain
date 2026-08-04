@@ -407,7 +407,7 @@
       "semantic_extraction"
     ],
     "required_outcomes": [
-      "路由到 memory",
+      "路由到 memory 或 chatbot（语义提炼路径）",
       "写入一条结构化的语义记忆（memory_type=semantic_knowledge，不是'用户让我总结'）",
       "包含提炼后的技术选型标准"
     ],
@@ -426,7 +426,7 @@
     "id": "memory-semantic-extraction-knowledge",
     "created_at": "2026-07-30",
     "substage": "dataset",
-    "note": "语义提炼由 memory agent 完成（semantic_knowledge 类型），非 chatbot"
+    "note": "语义提炼可由 memory agent（semantic_knowledge）或 chatbot（write_topic_memory）完成，核心是写入结构化语义记忆"
   },
   {
     "input": "我哪里说了要去北京？我的obsidian被污染了？我根本没说过要去，你把这一条规划去掉。",
