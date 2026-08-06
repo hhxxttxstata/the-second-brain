@@ -1,25 +1,28 @@
+# Personal Knowledge Agent — Docker 镜像
+# 仿 Dify 模式：docker-compose up 一条命令启动
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# 系统依赖（jieba 分词 + 编译需要）
+# 系统依赖最小化（jieba 无编译依赖，纯 Python）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# 复制依赖清单并安装
+# 依赖清单（先复制以利用层缓存）
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制代码
+# 复制代码 + eval 评测集
 COPY app/ ./app/
 COPY agent_data/eval/ ./agent_data/eval/
 
-# 创建数据目录（云上运行时挂载或初始化）
-RUN mkdir -p agent_data/traces agent_data/benchmark agent_data/feedback \
-    agent_data/tasks agent_data/handoffs agent_data/memory \
-    agent_data/outputs agent_data/code_runs
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
 
-# 默认启动 Streamlit Web 界面
 EXPOSE 8501
-CMD ["streamlit", "run", "app/chat_web.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+EXPOSE 8000
+
+# 默认启动 Web 界面（引导 → Streamlit）
+CMD ["sh", "-c", "python -c 'from app.cloud_bootstrap import main; main()' && exec streamlit run app/chat_web.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"]
