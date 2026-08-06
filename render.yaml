@@ -1,0 +1,18 @@
+# Render Blueprint — 自动部署配置
+services:
+  - type: web
+    name: personal-knowledge-agent
+    runtime: docker
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: LLM_API_KEY
+        sync: false          # 在 Render Dashboard 手动设置（安全）
+      - key: LLM_MODEL
+        value: deepseek-v4-flash
+      - key: LLM_BASE_URL
+        value: https://api.deepseek.com/v1
+      - key: OBSIDIAN_VAULT
+        value: /app/vault     # 云上 vault 目录（可用卷挂载或初始化）
+      - key: AGENT_DATA_DIR
+        value: /app/agent_data

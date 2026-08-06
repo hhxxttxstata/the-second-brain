@@ -80,11 +80,14 @@ MEDICAL_RAG_URL=http://127.0.0.1:8001
 MEDICAL_RAG_API_KEY=
 ```
 
-### 2. 安装依赖
+### 2. 安装依赖（项目级 venv）
 
 ```bash
 cd D:\MyAgent
-pip install -r requirements.txt
+python -m venv .venv                          # 创建项目虚拟环境（一次性）
+.venv\Scripts\activate                        # 激活（Windows）
+# 或 Git Bash: source .venv/Scripts/activate
+pip install -r requirements.txt               # 安装依赖（国内可加 -i https://pypi.tuna.tsinghua.edu.cn/simple）
 ```
 
 ### 3. 交互式对话
@@ -101,7 +104,27 @@ python -X utf8 -m app.chat
 👤 > 帮我分析一下秋招准备     → 反思模式
 👤 > 肺栓塞的CTPA征象有哪些   → 调用医疗 RAG 工具
 👤 > status                   → 系统状态
+👤 > model 2                  → 切换 LLM 模型（model list 查看）
 ```
+
+### 模型切换
+
+```bash
+👤 > model                    # 查看可用模型列表（当前 ✅ 标记）
+👤 > model 2                  # 按序号切换（1=DeepSeek V4 Flash 默认）
+👤 > model reasoner           # 按别名/ID 切换（reasoner / gpt / claude / chat / flash）
+```
+
+可用模型预设（[app/agent/model_switch.py](app/agent/model_switch.py) 可扩展）：
+| 模型 | 说明 |
+|---|---|
+| DeepSeek V4 Flash | 默认，快（关闭思考模式） |
+| DeepSeek Chat | 通用 |
+| DeepSeek Reasoner | 推理强，慢（temperature 0.3） |
+| GPT-4o-mini | OpenAI（需 OPENAI_API_KEY） |
+| Claude Sonnet 4.5 | Anthropic（需 ANTHROPIC_API_KEY） |
+
+切换持久化到 `agent_data/model_config.json`，重启后仍生效；不影响 `.env` 配置。
 
 ### 4. API 服务器
 
@@ -133,6 +156,21 @@ curl -X POST http://localhost:8000/agent/v2/chat \
 | `get_ai_news` | AI 行业动态 |
 | `medical_rag_query` | 医学知识库问答（桥接医疗 RAG 系统） |
 | `medical_pe_diagnosis` | 肺栓塞影像诊断（桥接医疗 RAG 系统） |
+| `generate_excel` | 生成 Excel 报表（openpyxl，含表头/自动列宽） |
+| `control_visio` | 控制 Visio 画流程图（COM 自动化） |
+| `run_code` | 执行 Python 代码（受控目录 + 超时保护） |
+
+### 编程能力（输出不限于 Obsidian）
+
+```bash
+👤 > 帮我做一个秋招面经统计表            → generate_excel → agent_data/outputs/*.xlsx
+👤 > 画一个秋招准备的流程图              → control_visio → Visio 打开 .vsdx
+👤 > 写代码把这段数据处理一下            → run_code → 受控执行返回结果
+```
+
+- **Excel**：openpyxl 生成 `.xlsx`，支持表头/多行/自动列宽，输出到 `agent_data/outputs/`
+- **Visio**：pywin32 COM 自动化，创建流程图（矩形/菱形/椭圆/平行四边形）+ 导出 PDF
+- **代码执行**：受控环境（`agent_data/code_runs/`）+ 超时保护（默认 60s），防死循环
 
 ### 多 Agent 编排（Supervisor 路由）
 
@@ -220,6 +258,37 @@ API_PORT=8001 python app.py
 ```
 
 之后 Agent 会自动路由医学问题（肺栓塞/CTPA/血栓/医学文献）到 `medical_rag_query` 工具，从医学知识库检索回答。服务不可达时优雅降级（如实告知，不编造）。
+
+---
+
+## Web 界面（本地 / 云部署）
+
+### 本地 Web 对话界面
+
+```bash
+streamlit run app/chat_web.py
+# 浏览器打开 http://localhost:8501
+```
+
+特性：
+- 左侧对话区（session 感知，跨会话延续）
+- 右侧**上下文状态面板**（路由 / 延迟 / Token / 工具调用 / 上下文来源 / 失败码）
+- 每条回答下**反馈按钮**（有用/没用/工具错/记忆错 → 写入 feedback/）
+- 底部**模型切换器**（同 `/model` 命令）
+
+### 云部署（Render / Railway）
+
+```bash
+# 1. 本地构建验证
+docker build -t agent .
+
+# 2. Render 部署（render.yaml 已配置）
+#    - 环境变量: LLM_API_KEY（必须）、LLM_MODEL、OBSIDIAN_VAULT（云上路径）
+#    - AGENT_DATA_DIR 可选（默认 /app/agent_data）
+#    - 启动命令: python app/cloud_bootstrap.py && streamlit run app/chat_web.py
+```
+
+**无 vault 模式**：云上不挂本地 Obsidian 笔记时，`cloud_bootstrap.py` 自动初始化空 vault + agent_data 目录，Agent 保留对话/记忆/任务/工具能力（笔记检索后续可接 git 同步）。
 
 ---
 

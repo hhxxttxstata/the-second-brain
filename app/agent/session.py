@@ -40,7 +40,13 @@ def save_messages(session_id: str,
 
 def _summarize_and_persist(human: str, ai: str,
                            session_id: str) -> None:
-    """将本轮重点摘要写入 episodic 记忆。"""
+    """将本轮重点摘要写入 episodic 记忆。
+
+    摘要约束（防丢关键决策参数）:
+      1. 数字/日期/代码必须保留（金额、日期、基金代码等）
+      2. 工具名 + 关键参数必须保留（恢复执行依赖）
+      3. 实体名必须保留（人名/公司/项目名）
+    """
     if len(human.strip()) < 8:
         return
 
@@ -50,10 +56,15 @@ def _summarize_and_persist(human: str, ai: str,
 
         model = get_chat_model(temperature=0.1)
         prompt = (
-            "Extract key facts and intent from this conversation turn. "
-            "Output a concise single sentence in Chinese (under 100 chars):\n"
-            f"User: {human[:300]}\n"
-            f"Assistant: {ai[:300]}"
+            "Extract key facts, DECISIONS and PARAMETERS from this conversation turn.\n"
+            "Output concise Chinese (under 120 chars).\n"
+            "⚠️ MUST preserve ALL of:\n"
+            "  - numbers / dates / codes (amounts, dates, fund codes, thresholds)\n"
+            "  - tool names and their key arguments (e.g. vault_write → 简历_v2.md)\n"
+            "  - entity names (people, companies, project names)\n"
+            "If a decision changed a parameter (e.g. amount 1000→500), keep BOTH values.\n"
+            f"User: {human[:400]}\n"
+            f"Assistant: {ai[:400]}"
         )
         resp = model.invoke(prompt)
         summary = resp.content if hasattr(resp, "content") else str(resp)

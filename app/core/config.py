@@ -22,12 +22,13 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
 
     # Obsidian vault — 人类写的知识资产
+    # 云部署时通过 OBSIDIAN_VAULT 环境变量指定（可为空目录，无 vault 模式）
     obsidian_vault: str = "D:/MYWORLD"
 
     # Agent data — 机器读写运行数据
-    @property
-    def agent_data_dir(self) -> Path:
-        return Path(__file__).resolve().parent.parent.parent / "agent_data"
+    # 云部署时通过 AGENT_DATA_DIR 环境变量覆盖（默认项目根/agent_data）
+    # pydantic-settings 自动映射 AGENT_DATA_DIR → 本字段（Path 类型自动转换）
+    agent_data_dir: Path = Path(__file__).resolve().parent.parent.parent / "agent_data"
 
     # 医疗 RAG 服务（Pulmonary_embolism_system）
     medical_rag_url: str = "http://127.0.0.1:8001"
