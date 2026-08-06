@@ -117,10 +117,33 @@ def main():
             print("""
   plan         生成今日计划
   status       系统状态
-  任意输入     直接对话（session+memory index+handoff 感知）
+  model        切换 LLM 模型（model 2 / model reasoner / model list）
   help         显示帮助
   quit         退出
+  任意输入     直接对话（session+memory index+handoff 感知）
 """)
+            continue
+
+        # 模型切换命令
+        if text.lower() in ("model", "model list", "model ls", "模型"):
+            from app.agent.model_switch import format_model_menu
+            print(f"\n{format_model_menu()}\n")
+            continue
+        if text.lower().startswith("model "):
+            from app.agent.model_switch import (
+                format_model_menu, resolve_model_ref, set_current_model,
+                get_current_model_config,
+            )
+            ref = text[6:].strip()
+            mid = resolve_model_ref(ref)
+            if mid:
+                mc = set_current_model(mid)
+                print(f"\n✅ 已切换到: {mc['label']} ({mc['model']})\n")
+                # 清空工具缓存（工具绑定不依赖模型，无需重建）
+                print(f"  后续对话将使用 {mc['model']}\n")
+            else:
+                print(f"\n⚠️ 无法识别模型: {ref}")
+                print(f"{format_model_menu()}\n")
             continue
 
         response = handle_chat(text)

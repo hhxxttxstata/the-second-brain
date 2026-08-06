@@ -456,6 +456,84 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         handler=_medical_pe_diagnosis,
     ))
 
+    # ── 编程能力工具（Excel / Visio / 代码执行） ──
+
+    from app.agent.code_runner import generate_excel, control_visio, run_code
+
+    def _generate_excel(**kw: Any) -> str:
+        return generate_excel(
+            file_path=kw.get("file_path", ""),
+            data=kw.get("data", []),
+            sheet_name=kw.get("sheet_name", "Sheet1"),
+            headers=kw.get("headers"),
+        )
+
+    registry.register_native(RegisteredTool(
+        name="generate_excel",
+        description="生成 Excel 报表——把数据写成 .xlsx 文件（支持表头/多行数据/自动列宽）。用户要求生成表格/Excel/报表时使用。数据格式: [[行1列1, 行1列2], [行2列1, ...]]",
+        schema_={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "输出路径（如 秋招准备/面经统计.xlsx，相对路径存到 agent_data/outputs/）"},
+                "data": {"type": "array", "description": "二维数据 [[col1, col2], ...]，每行一个数组"},
+                "sheet_name": {"type": "string", "description": "工作表名（默认 Sheet1）"},
+                "headers": {"type": "array", "description": "表头列表（可选）"},
+            },
+            "required": ["file_path", "data"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["创建 Excel 文件"],
+        handler=_generate_excel,
+    ))
+
+    def _control_visio(**kw: Any) -> str:
+        return control_visio(
+            action=kw.get("action", "create_flowchart"),
+            file_path=kw.get("file_path", ""),
+            shapes=kw.get("shapes", []),
+        )
+
+    registry.register_native(RegisteredTool(
+        name="control_visio",
+        description="控制 Microsoft Visio 画流程图——通过 COM 自动化创建 Visio 图形（矩形/菱形/椭圆/平行四边形）。用户要求画流程图/Visio图时使用。shapes 格式: [{\"text\": \"开始\", \"shape\": \"rectangle|decision|ellipse|parallelogram\", \"x\": 1.0, \"y\": 1.0, \"w\": 2.0, \"h\": 1.0}]",
+        schema_={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "create_flowchart（创建）| export_pdf（导出PDF）"},
+                "file_path": {"type": "string", "description": "输出 .vsdx 路径（默认 agent_data/outputs/diagram.vsdx）"},
+                "shapes": {"type": "array", "description": "流程图形状列表，每个含 text/shape/x/y/w/h"},
+            },
+            "required": ["action"],
+        },
+        source="native", server_name=None,
+        risk_level="medium", side_effects=["打开 Visio 应用", "创建/修改 .vsdx 文件"],
+        handler=_control_visio,
+    ))
+
+    def _run_code(**kw: Any) -> str:
+        return run_code(
+            code=kw.get("code", ""),
+            working_dir=kw.get("working_dir", ""),
+            timeout=int(kw.get("timeout", 60)),
+        )
+
+    registry.register_native(RegisteredTool(
+        name="run_code",
+        description="执行 Python 代码——在受控环境（agent_data/code_runs/）运行 Agent 生成的代码，返回输出。用于数据处理、文件操作、批量转换等编程任务。用户要求'写代码/脚本处理'时使用",
+        schema_={
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "完整 Python 代码"},
+                "working_dir": {"type": "string", "description": "工作目录（可选，默认 agent_data/code_runs/）"},
+                "timeout": {"type": "integer", "description": "超时秒数（默认60）"},
+            },
+            "required": ["code"],
+        },
+        source="native", server_name=None,
+        risk_level="high", side_effects=["在受控目录执行任意 Python 代码"],
+        handler=_run_code,
+    ))
+
     # ── Topic Memory 工具 ──
 
     from app.agent.topic_memory import (
