@@ -261,34 +261,45 @@ API_PORT=8001 python app.py
 
 ---
 
-## Web 界面（本地 / 云部署）
+## 部署（Docker Compose 一键启动，仿 Dify 模式）
 
-### 本地 Web 对话界面
+**无需云服务器**——别人拿到项目后本地 Docker 一条命令跑起来：
 
 ```bash
-streamlit run app/chat_web.py
-# 浏览器打开 http://localhost:8501
+# 1. 复制配置模板并填入 API Key
+cp .env.example .env
+
+# 2. 一键启动
+docker compose up -d
+
+# 3. 浏览器打开
+#    http://localhost:8501   ← Web 对话界面
+#    http://localhost:8000   ← FastAPI 后端（可选）
 ```
 
-特性：
+### 容器特性
+
+| 特性 | 说明 |
+|---|---|
+| **一键启动** | `docker compose up -d`，自动构建镜像 + 启动 |
+| **数据持久化** | `agent_data` 卷挂载——记忆/任务/trace/反馈重启不丢 |
+| **vault 挂载** | 有本地笔记时改 `docker-compose.yml`：`./MYWORLD:/app/vault` |
+| **健康检查** | 容器自动健康检查（30s 间隔，启动 30s 后开始）|
+| **自动重启** | `restart: unless-stopped`，异常退出自动拉起 |
+| **配置模板** | `.env.example` 注释清楚，只填 `LLM_API_KEY` 即可 |
+
+### Web 界面
+
+```bash
+streamlit run app/chat_web.py   # 本地直接跑（无需 Docker）
+```
+
 - 左侧对话区（session 感知，跨会话延续）
 - 右侧**上下文状态面板**（路由 / 延迟 / Token / 工具调用 / 上下文来源 / 失败码）
 - 每条回答下**反馈按钮**（有用/没用/工具错/记忆错 → 写入 feedback/）
 - 底部**模型切换器**（同 `/model` 命令）
 
-### 云部署（Render / Railway）
-
-```bash
-# 1. 本地构建验证
-docker build -t agent .
-
-# 2. Render 部署（render.yaml 已配置）
-#    - 环境变量: LLM_API_KEY（必须）、LLM_MODEL、OBSIDIAN_VAULT（云上路径）
-#    - AGENT_DATA_DIR 可选（默认 /app/agent_data）
-#    - 启动命令: python app/cloud_bootstrap.py && streamlit run app/chat_web.py
-```
-
-**无 vault 模式**：云上不挂本地 Obsidian 笔记时，`cloud_bootstrap.py` 自动初始化空 vault + agent_data 目录，Agent 保留对话/记忆/任务/工具能力（笔记检索后续可接 git 同步）。
+**无 vault 模式**：容器内 vault 目录初始化为空，Agent 保留对话/记忆/任务/工具能力（笔记检索需挂载本地 vault 或后续接 git 同步）。
 
 ---
 

@@ -1,0 +1,36 @@
+# Personal Knowledge Agent — Docker Compose 一键启动
+# 仿 Dify 模式：
+#   1. cp .env.example .env   （配置 LLM_API_KEY）
+#   2. docker compose up -d
+#   3. 浏览器打开 http://localhost:8501
+#
+# 数据持久化：agent_data 卷挂载，重启/升级不丢记忆与任务
+services:
+  agent:
+    build: .
+    container_name: personal-knowledge-agent
+    ports:
+      - "8501:8501"    # Web 对话界面 (Streamlit)
+      - "8000:8000"    # FastAPI 后端 (可选)
+    env_file:
+      - .env
+    environment:
+      # 容器内数据目录（挂载卷，持久化）
+      AGENT_DATA_DIR: /app/agent_data
+      # 容器内 vault 目录（无 vault 模式下初始化为空）
+      OBSIDIAN_VAULT: /app/vault
+      # 容器内 Python 输出编码（中文）
+      PYTHONIOENCODING: utf-8
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # 数据持久化：记忆/任务/trace/反馈 全部在这
+      - agent_data:/app/agent_data
+      # vault 挂载（可选）：有本地笔记时挂载，如 ./MYWORLD:/app/vault
+      - vault:/app/vault
+    restart: unless-stopped
+
+volumes:
+  agent_data:
+    name: pka-agent-data
+  vault:
+    name: pka-vault
