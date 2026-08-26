@@ -1,12 +1,13 @@
-"""Approval Router — 审批路由中间件。
+"""Approval Router — 审批路由中间件（轻量版）。
 
 连接 pending_ledger + chatbot system prompt，实现跨会话审批延续。
 
-流程:
+流程 (2026-08 简化，去掉执行状态机):
   1. Agent 提议操作 → propose_action() → pending_ledger
   2. build_context() 从 pending_ledger 拉取待审批摘要 → 注入 system prompt
-  3. 用户说"同意" → approve_action() → 更新状态 → 下一轮可以执行
-  4. HITL 执行 → mark_executed() → 记录结果
+  3. 用户说"同意" → approve_action() 标记批准；用户说"拒绝" → reject_action()
+  4. 执行由模型在对话流完成（prompt 规则：用户确认后立即执行），
+     不再由 ledger 编排 executing/executed 状态（execution_log 已停用）
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ from .pending_ledger import (
     approve_action,
     reject_action,
     get_pending_actions,
-    has_been_executed,
     get_pending_summary,
     get_pending_tasks_summary,
     init_ledger,

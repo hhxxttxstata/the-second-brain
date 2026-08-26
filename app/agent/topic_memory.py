@@ -115,15 +115,24 @@ def write_topic(topic_path: str, content: str, append: bool = False) -> str:
             f.write(f"\n\n{comment}{content}")
     else:
         path.write_text(f"{comment}{content}", encoding="utf-8")
+    # 记录到当前 trace（topic memory 写入是记忆类检查的重要证据）
+    try:
+        from app.agent.trace import get_current_trace
+        ct = get_current_trace()
+        if ct is not None:
+            ct.add_memory_update("topic_memory", f"{topic_path}: {content[:80]}")
+    except Exception:
+        pass
     return str(path)
 
 
-def upsert_index_entry(category: str, title: str, link: str, summary: str) -> None:
+def upsert_index_entry(category: str, title: str, link: str, summary: str,
+                       related: list[str] | None = None) -> None:
     """在 MEMORY.md 中增/更新一条索引条目。
 
     MEMORY.md 格式:
       ## People
-      - 张三: 见 people/zhang-san.md | 前端开发，3年经验
+      - 张三: 见 people/zhang-san.md | 前端开发，3年经验 | 关联: projects/ai-agent, preferences
       - 李四: 见 people/li-si.md | 设计
 
     Args:
@@ -131,6 +140,7 @@ def upsert_index_entry(category: str, title: str, link: str, summary: str) -> No
         title: 条目标题
         link: Topic File 路径，如 "people/zhang-san"
         summary: 单行摘要（~100 chars）
+        related: 关联的 topic 路径列表（召回时一跳展开，逗号分隔）
     """
     _ensure_dir()
     link_text = f"见 {link}.md"
@@ -151,6 +161,8 @@ def upsert_index_entry(category: str, title: str, link: str, summary: str) -> No
             break
 
     entry_line = f"- {title}: {link_text} | {summary}"
+    if related:
+        entry_line += f" | 关联: {', '.join(related)}"
 
     if section_start >= 0:
         # 检查是否已有同链接条目
@@ -171,6 +183,32 @@ def upsert_index_entry(category: str, title: str, link: str, summary: str) -> No
 # ---------------------------------------------------------------------------
 # 级联读取：MEMORY.md → 按需读 Topic
 # ---------------------------------------------------------------------------
+
+
+def get_related_topics(topic_path: str) -> list[str]:
+    """返回与某 topic 关联的其他 topic 路径（MEMORY.md 条目中 '关联: a, b' 解析）。
+
+    关联一跳：召回命中 A 时顺带加载与 A 关联的 B，用于"面试→简历项目→塔塔"这类
+    跨主题联想，不引入向量检索。
+    """
+    if not _INDEX_FILE.exists():
+        return []
+    try:
+        text = _INDEX_FILE.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    results: list[str] = []
+    for line in text.split("\n"):
+        if f"{topic_path}.md" not in line:
+            continue
+        m = re.search(r"关联:\s*([^|]+)", line)
+        if not m:
+            continue
+        for rel in m.group(1).split(","):
+            rel = rel.strip()
+            if rel and rel not in results:
+                results.append(rel)
+    return results
 
 
 def load_relevant_memories(task: str, max_chars: int = 2000) -> str:

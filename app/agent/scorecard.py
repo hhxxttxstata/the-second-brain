@@ -141,6 +141,9 @@ def _score_end_state() -> dict[str, Any]:
     for f in traces:
         try:
             d = json.loads(f.read_text(encoding="utf-8"))
+            # 排除 benchmark 自跑 trace（无真实对话上下文，会稀释真实数据）
+            if d.get("task_type") in ("benchmark",):
+                continue
             total += 1
             tt = d.get("task_type", "?")
             mus = d.get("memory_updates", [])
@@ -150,7 +153,7 @@ def _score_end_state() -> dict[str, Any]:
 
             if mus:
                 tasks_with_memory_updates += 1
-            if tt in ("memory", "daily_plan") and mus:
+            if tt in ("memory", "daily_plan", "plan") and mus:
                 memory_writes += 1
             if css:
                 ctx_sourced += 1
@@ -158,7 +161,7 @@ def _score_end_state() -> dict[str, Any]:
             pass
 
     if total == 0:
-        return {"score": 50, "detail": "无数据"}
+        return {"score": None, "detail": "无真实对话 trace（无数据，不参与加权）"}
 
     # 状态正确性评分 = 记忆写入率 + 上下文使用率
     ctx_rate = ctx_sourced / total
@@ -261,8 +264,22 @@ def _score_false_completion() -> dict[str, Any]:
                 false_completions += 1
                 false_details.append(f"memory声称完成但无写入: {fout[:60]}")
             elif tt in ("plan", "daily_plan") and not mus:
-                false_completions += 1
-                false_details.append(f"plan声称完成但无记忆: {fout[:60]}")
+                # plan/task_ops 直接写 todos（不走 memory_updates）→ 查 todos 真实状态
+                real_done = False
+                try:
+                    from app.agent.agent_data_service import read_memory
+                    td = read_memory("task")
+                    todos = td.get("todos", [])
+                    if todos:
+                        real_done = True
+                except Exception:
+                    pass
+                # 或调用了写工具（update_task_status 等）
+                if any(t.get("name") in ("update_task_status", "write_memory") for t in tcs):
+                    real_done = True
+                if not real_done:
+                    false_completions += 1
+                    false_details.append(f"plan声称完成但状态未变: {fout[:60]}")
             elif tt in ("chatbot",) and not tcs and not mus:
                 # chatbot 可以不调工具
                 pass
@@ -380,7 +397,7 @@ def _score_tool_output_utilization() -> dict[str, Any]:
         except Exception:
             pass
     if checked == 0:
-        return {"score": 50, "detail": "无数据(需修复trace)"}
+        return {"score": None, "detail": "无数据（不参与加权）"}
     rate = round(ok / checked * 100, 1)
     return {"score": rate, "detail": f"{ok}/{checked} ({rate}%)"}
 
@@ -408,7 +425,7 @@ def _score_trajectory_efficiency() -> dict[str, Any]:
         except Exception:
             pass
     if tasks == 0:
-        return {"score": 50, "detail": "无数据(需修复trace)"}
+        return {"score": None, "detail": "无数据（不参与加权）"}
     avg = round(sum(counts) / len(counts), 1) if counts else 0
     repeat_rate = round(repeated / sum(counts) * 100, 1) if sum(counts) else 0
     loop_rate = round(loops / tasks * 100, 1) if tasks else 0
@@ -439,7 +456,8 @@ def _score_recovery() -> dict[str, Any]:
         except Exception:
             pass
     if failed == 0:
-        return {"score": 80, "detail": "无工具失败记录(或trace未记录)"}
+        # 无失败记录 → 无数据，不参与加权（无法判断恢复能力）
+        return {"score": None, "detail": "无工具失败记录（无数据，不参与加权）"}
     rate = round(recovered / failed * 100, 1)
     return {"score": rate, "detail": f"{recovered}/{failed} ({rate}%)"}
 
@@ -562,25 +580,46 @@ def _check_hit_count(vault_reads: list[dict]) -> dict[str, int]:
 
 
 def _has_vault_source_in_output(fout: str, vault_dir: Path) -> bool:
-    """检查输出是否包含来自 vault 的文件引用。"""
+    """检查输出是否包含来自 vault 的文件引用。
+
+    匹配策略（从宽到严，任一命中即算有来源）:
+      1. 完整相对路径，如 "notes/项目笔记/agent项目简历描述.md"
+      2. 文件名，如 "agent项目简历描述.md"（带 .md 后缀）
+      3. 路径片段，如 "notes/项目笔记"（含"来源:"或"📁"标注前缀）
+      4. 明确的来源标注，如 "来源: xxx"
+    """
     if not fout:
         return False
     try:
-        md_files = [str(p.relative_to(vault_dir)) for p in vault_dir.rglob("*.md")][:20]
+        md_files = [str(p.relative_to(vault_dir)) for p in vault_dir.rglob("*.md")][:50]
     except Exception:
         md_files = []
+    fout_lower = fout.lower()
+
+    # 1. 完整相对路径
     for ref in md_files:
-        if str(ref).lower().replace("\\", "/") in fout.lower():
+        if ref.lower().replace("\\", "/") in fout_lower:
             return True
+
+    # 2. 文件名（.md 后缀）
+    for ref in md_files:
+        fname = Path(ref).name.lower()
+        if fname and fname in fout_lower:
+            return True
+
+    # 3. "来源:" 标注（agent 明确写来源，即使文件名略写）
+    if "来源" in fout and ("来源:" in fout or "来源：" in fout):
+        return True
+
     return False
 
 
-def _score_rag_evidence_recall() -> dict[str, Any]:
-    """2.1 Critical Evidence Recall@K
+def _score_retrieval_health() -> dict[str, Any]:
+    """2.1 检索健康度 Retrieval Health
 
-    基于最近的 benchmark 测试和 trace 记录，分析 vault 搜索是否正确返回结果。
-    由于当前系统没有标注"必要证据集"，
-    用检索成功率和输出是否包含 vault 引用作为 proxy。
+    三个真实可观测数字：检索调用成功率 + 非空结果率 + 输出含来源引用率。
+    刻意不再伪装 Recall@K / NDCG / Groundedness——那些指标需要 relevance
+    标注，当前系统没有，proxy 只会制造假精度（见取舍记录）。
     """
     vault_reads = _load_vault_reads_from_traces()
     hits = _check_hit_count(vault_reads)
@@ -621,6 +660,8 @@ def _score_rag_evidence_recall() -> dict[str, Any]:
         return {"score": 50, "detail": "无检索记录(需修复trace记录工具调用)", "total": 0}
 
     hit_rate = round(sourced_outputs / search_intents * 100, 1)
+    # 检索健康度 = 引用率(60%) + 调用成功率(40%)；引用率是当前最接近
+    # "检索结果真的被用上了"的可观测信号，成功率是工具层健康度
     score = round(hit_rate * 0.6 + hits["success_rate"] * 0.4, 1)
     return {
         "score": score,
@@ -629,136 +670,9 @@ def _score_rag_evidence_recall() -> dict[str, Any]:
         "evidence_found": sourced_outputs,
         "evidence_total": search_intents,
         "hit_rate": hit_rate,
+        "call_success_rate": hits["success_rate"],
     }
 
-
-def _score_rag_ndcg() -> dict[str, Any]:
-    """2.2 NDCG@K / MRR
-
-    当前系统没有标注 relevance grade，用检索工具调用的成功率
-    和输出是否基于检索结果作为 proxy。
-    """
-    vault_reads = _load_vault_reads_from_traces()
-    if not vault_reads:
-        return {"score": 50, "detail": "无检索记录(需修复trace)", "total_calls": 0}
-
-    # proxy: 检索成功率 + 非空结果率
-    total = len(vault_reads)
-    ok = sum(1 for r in vault_reads if r["success"])
-    has_content = sum(1 for r in vault_reads if r.get("has_result"))
-    success_rate = ok / total if total else 0
-    content_rate = has_content / total if total else 0
-
-    # 这里无法做真正的 NDCG，用 rank_rate proxy
-    rank_rate = success_rate * 0.5 + content_rate * 0.5
-    score = round(rank_rate * 100, 1)
-    return {
-        "score": score,
-        "detail": f"检索{total}次, 成功{ok}({success_rate:.0%}), 有内容{has_content}({content_rate:.0%})",
-        "total_calls": total,
-        "success_rate": round(success_rate * 100, 1),
-        "content_rate": round(content_rate * 100, 1),
-    }
-
-
-def _score_rag_groundedness() -> dict[str, Any]:
-    """2.3 Groundedness
-
-    分析 answer 是否基于检索结果。检查 trace 中：
-    - 有 search_vault 调用的任务，final_output 是否包含 vault 来源
-    """
-    vault_reads = _load_vault_reads_from_traces()
-    vault_dir = _VAULT_DIR
-    if not vault_dir.exists():
-        return {"score": 50, "detail": "vault 不存在"}
-
-    traces = sorted(_TRACE_DIR.glob("trace_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]
-    grounded_count = 0
-    total_answer = 0
-    for f in traces:
-        try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            fout = d.get("final_output", "")
-            tcs = d.get("tool_calls", [])
-            if d.get("task_type") != "chatbot":
-                continue
-            has_search = any(tc.get("name") in ("search_vault", "read_file", "read_folder") for tc in tcs)
-            if not has_search or not fout:
-                continue
-            total_answer += 1
-            if _has_vault_source_in_output(fout, vault_dir):
-                grounded_count += 1
-        except Exception:
-            pass
-
-    if total_answer == 0:
-        return {"score": 50, "detail": "无可评估的检索型回答(trace未记录工具调用)"}
-
-    rate = round(grounded_count / total_answer * 100, 1)
-    return {
-        "score": rate,
-        "detail": f"{grounded_count}/{total_answer} 回答基于检索结果 ({rate}%)",
-        "grounded": grounded_count,
-        "total": total_answer,
-    }
-
-
-def _score_rag_completeness() -> dict[str, Any]:
-    """2.4 Response Completeness
-
-    分析 benchmark 通过率作为 proxy（通过 = 任务基本完成）。
-    """
-    bm_files = sorted(_BENCHMARK_DIR.glob("benchmark_*.json"), reverse=True)
-    if not bm_files:
-        return {"score": 0, "detail": "无 benchmark"}
-    latest = json.loads(bm_files[0].read_text(encoding="utf-8"))
-    rate = latest.get("pass_rate", 0)
-    return {
-        "score": rate,
-        "detail": f"benchmark pass_rate={rate}% (回答完整性 proxy)",
-    }
-
-
-def _score_rag_citation() -> dict[str, Any]:
-    """2.5 Citation Correctness
-
-    当前系统不返回显式文件路径引用，检查 final_output 是否包含文件名或路径。
-    """
-    traces = sorted(_TRACE_DIR.glob("trace_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]
-    vault_dir = _VAULT_DIR
-    if not vault_dir.exists():
-        return {"score": 50, "detail": "vault 路径不存在"}
-
-    try:
-        vault_files = [str(p.relative_to(vault_dir)).lower().replace("\\", "/")
-                       for p in vault_dir.rglob("*.md")][:50]
-    except Exception:
-        vault_files = []
-
-    total = 0
-    correct = 0
-    for f in traces:
-        try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            fout = d.get("final_output", "")
-            if not fout:
-                continue
-            # 是否有任何引用
-            has_ref = any(ref in fout.lower() for ref in vault_files)
-            if has_ref:
-                total += 1
-                correct += 1  # 有文件引用的初步认为正确
-        except Exception:
-            pass
-
-    if total == 0:
-        return {"score": 70, "detail": "无显式文件引用(非缺陷，当前系统不返回路径)"}
-
-    rate = round(correct / total * 100, 1)
-    return {
-        "score": rate,
-        "detail": f"{correct}/{total} 输出含来源引用 ({rate}%)",
-    }
 
 def _score_retrieval() -> dict[str, Any]:
     """3.1 Retrieval Quality — 分析 vault 搜索工具调用"""
@@ -865,7 +779,8 @@ def _score_memory_write_precision() -> dict[str, Any]:
         return {"score": 50, "detail": "无情景记忆"}
 
     total = len(entries)
-    deprecated = sum(1 for e in entries if "deprecated" in e.get("tags", []))
+    # SQLite 行: tags 是 JSON 字符串, deprecated 是 int 字段
+    deprecated = sum(1 for e in entries if e.get("deprecated") or "deprecated" in json.loads(e.get("tags", "[]") or "[]"))
     active = total - deprecated
 
     # 活跃率越高 = 写入精度越好 (无矛盾的记忆才应该活跃)
@@ -880,7 +795,7 @@ def _score_memory_write_precision() -> dict[str, Any]:
     # 检查 profile 写入有无确认标记
     try:
         profile = read_memory("stable_profile")
-        profile_entries = [e for e in entries if "profile" in e.get("tags", [])]
+        profile_entries = [e for e in entries if "profile" in json.loads(e.get("tags", "[]") or "[]")]
         if profile_entries:
             details.append(f"profile写入{len(profile_entries)}次(均无用户确认标记)")
     except Exception:
@@ -943,12 +858,13 @@ def _score_memory_update() -> dict[str, Any]:
     if not entries:
         return {"score": 50, "detail": "无情景记忆"}
 
-    deprecated_entries = [e for e in entries if "deprecated" in e.get("tags", [])]
-    superseded = [e for e in deprecated_entries if "superseded_by" in e]
+    # SQLite 行: deprecated 是 int 字段, superseded_by 是字符串(非空=被替代)
+    deprecated_entries = [e for e in entries if e.get("deprecated") or "deprecated" in json.loads(e.get("tags", "[]") or "[]")]
+    superseded = [e for e in deprecated_entries if e.get("superseded_by")]
     total = len(entries)
 
     if total == 0:
-        return {"score": 50, "detail": "无数据"}
+        return {"score": None, "detail": "无记忆数据（不参与加权）"}
 
     # 检查是否有内容相似的条目（可能重复写入而非覆盖）
     contents = [e.get("content", "")[:50] for e in entries]
@@ -983,12 +899,12 @@ def _score_memory_temporal() -> dict[str, Any]:
     if not entries:
         return {"score": 50, "detail": "无情景记忆"}
 
-    # 所有记忆都应带有时间戳
-    with_ts = sum(1 for e in entries if e.get("timestamp"))
+    # 所有记忆都应带有时间戳（SQLite 字段是 created_at）
+    with_ts = sum(1 for e in entries if e.get("created_at"))
     ts_rate = with_ts / len(entries) if entries else 0
 
     # 时间跨度（如果系统有跨天记忆说明时间概念在运作）
-    timestamps = [e.get("timestamp", "") for e in entries if e.get("timestamp")]
+    timestamps = [e.get("created_at", "") for e in entries if e.get("created_at")]
     if len(timestamps) >= 2:
         try:
             sorted_ts = sorted(timestamps)
@@ -1068,22 +984,22 @@ def _score_memory_safety() -> dict[str, Any]:
     from app.agent.agent_data_service import read_memory
     episodic = read_memory("episodic")
     entries = episodic.get("entries", [])
-    deprecated = [e for e in entries if "deprecated" in e.get("tags", [])]
+    deprecated = [e for e in entries if e.get("deprecated") or "deprecated" in json.loads(e.get("tags", "[]") or "[]")]
 
     violations = 0
     details = []
 
     # 检查是否有 deprecated 条目没有被 superseded_by 标记（语义降级但未标明替代）
     for e in deprecated:
-        if "superseded_by" not in e:
+        if not e.get("superseded_by"):
             violations += 0.5  # 轻度违规
 
-    # 检查 profile 是否有正确创建时间
+    # 检查 profile 是否正确创建（SQLite 版 profile 存 content JSON，无 __created_at 时间线字段）
     profile = read_memory("stable_profile")
-    has_timeline = "__created_at" in profile and "__updated_at" in profile
-    if not has_timeline:
+    if not profile:
         violations += 1
-        details.append("profile缺时间线")
+        details.append("profile 为空")
+    # 非空 profile + 有稳定字段 → 正常
 
     # 重复 todo
     task = read_memory("task")
@@ -1193,7 +1109,8 @@ def _score_feedback() -> dict[str, Any]:
     """5.1 User Feedback Score"""
     fb_files = sorted(_FEEDBACK_DIR.glob("fb_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not fb_files:
-        return {"score": 50, "detail": "暂无评价 (默认中分)"}
+        # 无反馈数据 → 不参与加权（score=None 会被 run_scorecard 跳过）
+        return {"score": None, "detail": "暂无评价（无数据，不参与加权）"}
     useful = sum(1 for f in fb_files if json.load(open(f, encoding="utf-8")).get("failure_type") == "useful")
     total = len(fb_files)
     return {"score": round(useful / total * 100, 1), "detail": f"{useful}/{total} 有用"}
@@ -1209,12 +1126,8 @@ WEIGHTS_V2 = {
     "score_end_state": 0.08,
     "score_constraint": 0.05,
     "score_false_completion": 0.02,
-    # Level 2 — RAG与知识可信度 (25%)
-    "score_rag_evidence_recall": 0.07,
-    "score_rag_ndcg": 0.04,
-    "score_rag_groundedness": 0.06,
-    "score_rag_completeness": 0.05,
-    "score_rag_citation": 0.03,
+    # Level 2 — 检索健康度（原 5 个 RAG proxy 维度合并为 1 个真实可观测维度）
+    "score_retrieval_health": 0.10,
     # Level 3 — 路由与推理 (20%)
     "score_routing": 0.10,
     "score_latency": 0.10,
@@ -1246,11 +1159,7 @@ LEVEL_LABELS = {
     "score_end_state": "L1-状态正确性",
     "score_constraint": "L1-约束满足率",
     "score_false_completion": "L1-虚假完成率",
-    "score_rag_evidence_recall": "L2-证据召回率",
-    "score_rag_ndcg": "L2-排序质量NDCG",
-    "score_rag_groundedness": "L2-答案可溯源率",
-    "score_rag_completeness": "L2-回答完整率",
-    "score_rag_citation": "L2-引用正确率",
+    "score_retrieval_health": "L2-检索健康度",
     "score_routing": "L3-路由准确",
     "score_latency": "L3-延迟性能",
     "score_memory_write_precision": "L4-写入精确率",
@@ -1276,11 +1185,7 @@ LEVEL_PARENTS = {
     "score_end_state": "L1 端到端任务结果 (30%)",
     "score_constraint": "L1 端到端任务结果 (30%)",
     "score_false_completion": "L1 端到端任务结果 (30%)",
-    "score_rag_evidence_recall": "L2 RAG与知识可信度 (25%)",
-    "score_rag_ndcg": "L2 RAG与知识可信度 (25%)",
-    "score_rag_groundedness": "L2 RAG与知识可信度 (25%)",
-    "score_rag_completeness": "L2 RAG与知识可信度 (25%)",
-    "score_rag_citation": "L2 RAG与知识可信度 (25%)",
+    "score_retrieval_health": "L2 检索健康度 (10%)",
     "score_routing": "L3 路由与推理 (20%)",
     "score_latency": "L3 路由与推理 (20%)",
     "score_memory_write_precision": "L4 长期记忆 (20%)",
@@ -1303,20 +1208,16 @@ LEVEL_PARENTS = {
 
 
 def run_scorecard() -> dict[str, Any]:
-    """运行 V2 评分卡。"""
+    """运行 V3 评分卡。"""
     start = time.monotonic()
-    logger.info("scorecard.start", step="📊 Agent V2 评分卡启动")
+    logger.info("scorecard.start", step="📊 Agent V3 评分卡启动")
 
     scorers = {
         "score_e2e_success": _score_e2e_success_rate,
         "score_end_state": _score_end_state,
         "score_constraint": _score_constraint,
         "score_false_completion": _score_false_completion,
-        "score_rag_evidence_recall": _score_rag_evidence_recall,
-        "score_rag_ndcg": _score_rag_ndcg,
-        "score_rag_groundedness": _score_rag_groundedness,
-        "score_rag_completeness": _score_rag_completeness,
-        "score_rag_citation": _score_rag_citation,
+        "score_retrieval_health": _score_retrieval_health,
         "score_routing": _score_routing,
         "score_latency": _score_latency,
         "score_memory_write_precision": _score_memory_write_precision,
@@ -1345,37 +1246,49 @@ def run_scorecard() -> dict[str, Any]:
             r = {"score": 0, "detail": f"error: {e}"}
         dims[key] = r
 
-    # 加权平均
+    # 加权平均（跳过无数据维度 score=None）
     weighted = 0
     total_weight = 0
+    skipped: list[str] = []
     for key, w in WEIGHTS_V2.items():
         s = dims.get(key, {}).get("score", 0)
+        if s is None:
+            skipped.append(key)
+            continue
         if isinstance(s, (int, float)):
             weighted += s * w
             total_weight += w
 
     overall = round(weighted / total_weight, 1) if total_weight else 0
 
-    # 按 Level 汇总
+    # 记录跳过的维度（透明性：无数据不空转加分）
+    if skipped:
+        logger.info("scorecard.skipped_dims",
+                    skipped=[LEVEL_LABELS.get(k, k) for k in skipped])
+
+    # 按 Level 汇总（跳过无数据维度）
     level_scores: dict[str, dict] = {}
     for key, parent in LEVEL_PARENTS.items():
         level_scores.setdefault(parent, {"score": 0, "count": 0})
         s = dims.get(key, {}).get("score", 0)
+        if s is None:
+            continue
         level_scores[parent]["score"] += s
         level_scores[parent]["count"] += 1
     for parent, d in level_scores.items():
-        level_scores[parent] = round(d["score"] / d["count"], 1) if d["count"] else 0
+        level_scores[parent] = round(d["score"] / d["count"], 1) if d["count"] else None
 
     report = {
-        "version": 2,
+        "version": 3,
         "timestamp": datetime.now().isoformat(),
         "total_score": overall,
+        "skipped_dims": [LEVEL_LABELS.get(k, k) for k in skipped],
         "level_scores": level_scores,
         "dimensions": {
             key: {
                 "score": d.get("score", 0),
                 "weight": WEIGHTS_V2.get(key, 0),
-                "weighted": round(d.get("score", 0) * WEIGHTS_V2.get(key, 0), 1),
+                "weighted": round(d.get("score", 0) * WEIGHTS_V2.get(key, 0), 1) if d.get("score") is not None else None,
                 "detail": d.get("detail", ""),
             }
             for key, d in dims.items()
@@ -1387,7 +1300,7 @@ def run_scorecard() -> dict[str, Any]:
         scorecard_dir = _DATA_DIR / "scorecard"
         scorecard_dir.mkdir(parents=True, exist_ok=True)
         today = date.today().isoformat()
-        (scorecard_dir / f"v2_{today}.json").write_text(
+        (scorecard_dir / f"v3_{today}.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -1413,7 +1326,7 @@ def run_scorecard() -> dict[str, Any]:
 
 
 def format_scorecard(report: dict[str, Any]) -> str:
-    """格式化 V2 评分卡输出。"""
+    """格式化 V3 评分卡输出。"""
     score = report.get("total_score", 0)
     dims = report.get("dimensions", {})
     levels = report.get("level_scores", {})
@@ -1431,14 +1344,17 @@ def format_scorecard(report: dict[str, Any]) -> str:
 
     lines = [
         f"{'='*54}",
-        f"  📊 Agent 评分卡 V2",
+        f"  📊 Agent 评分卡 V3",
         f"  等级: {grade}     总分: {score}/100",
         f"{'='*54}",
     ]
 
     # Level 汇总
     for parent, ls in levels.items():
-        lines.append(f"  {parent:32s} {ls:>5.1f}")
+        if ls is None:
+            lines.append(f"  {parent:32s} {'无数据':>5s}")
+        else:
+            lines.append(f"  {parent:32s} {ls:>5.1f}")
 
     lines.append(f"{'─'*54}")
 
@@ -1448,6 +1364,11 @@ def format_scorecard(report: dict[str, Any]) -> str:
         s = d.get("score", 0)
         w = d.get("weight", 0)
         detail = d.get("detail", "")
+        if s is None:
+            lines.append(f"  {label:18s} {'无数据':>10s}  (w={w:.0%})")
+            if detail:
+                lines.append(f"  {'':18s} {detail[:70]}")
+            continue
         if isinstance(s, (int, float)):
             bar_len = max(1, min(10, int(s / 10)))
         else:

@@ -19,6 +19,7 @@ JSONL 结构:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -92,10 +93,125 @@ def log_session_summary(
     return str(path)
 
 
+def _extract_turn_semantics(question: str, answer: str,
+                            trace: dict | None) -> tuple[list[str], list[str]]:
+    """LLM 提炼本轮对话的 decisions / next_actions。
+
+    输入是当前轮次的用户问题、助手回答和工具轨迹；输出结构化语义。
+    任何失败（无 key、超时、解析错误）都静默降级为空列表，不阻塞主流程。
+    """
+    try:
+        from .graphs.llm import get_chat_model
+        import json as _json
+
+        tool_lines = []
+        for tc in (trace or {}).get("tool_calls", [])[:8]:
+            name = tc.get("name", "?")
+            params = tc.get("params", {}) or {}
+            tool_lines.append(f"- {name}: {str(params)[:100]}")
+        tools_text = "\n".join(tool_lines) or "(无工具调用)"
+
+        prompt = (
+            "从这一轮对话中提取关键语义。\n"
+            "输出 JSON: {\"decisions\": [\"决策1\"], \"next_actions\": [\"下一步1\"]}\n"
+            "要求：\n"
+            "- decisions: 本轮做出的具体决策/参数变更（必须保留数字、日期、文件路径、工具名）\n"
+            "- next_actions: 明确的下一步动作（未完成的工作、后续跟进）；没有则空数组\n"
+            "- 中文，每条不超过 60 字；没有决策/下一步时用空数组 []，不要编造\n"
+            f"用户: {question[:300]}\n"
+            f"助手: {answer[:300]}\n"
+            f"工具轨迹:\n{tools_text}"
+        )
+        model = get_chat_model(temperature=0.1)
+        resp = model.invoke(prompt)
+        text = resp.content if hasattr(resp, "content") else str(resp)
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
+        data = _json.loads(text)
+        decisions = [str(d)[:80] for d in (data.get("decisions") or [])][:5]
+        next_actions = [str(n)[:80] for n in (data.get("next_actions") or [])][:5]
+        return decisions, next_actions
+    except Exception:
+        return [], []
+
+
+def log_session_summary_semantic(
+    session_id: str,
+    question: str,
+    answer: str,
+    route: str,
+    trace: dict | None = None,
+    trace_id: str = "",
+) -> str:
+    """语义化写 session summary：completed 来自真实工具轨迹，
+    decisions/next_actions 由 LLM 提炼，pending/evidence 关联真实 handoff。
+
+    取代旧的占位式写入（"路由=X: 已回答" / "检查活跃 handoffs: N 个待处理"），
+    让 carryover 注入的内容真正反映本轮做了什么、还差什么。
+    """
+    from .handoff import get_active_handoffs
+
+    active_handoffs = get_active_handoffs()
+    pending_handoffs = [
+        {"task_id": h["task_id"], "action": h.get("pending_tool", ""),
+         "status": h.get("status", "")}
+        for h in active_handoffs
+    ]
+
+    # completed：从 trace 工具轨迹提取真实动作
+    completed: list[str] = []
+    tool_calls = (trace or {}).get("tool_calls", []) or []
+    for tc in tool_calls[:8]:
+        name = tc.get("name", "?")
+        params = tc.get("params", {}) or {}
+        brief = str(params)[:60] if params else ""
+        completed.append(f"工具 {name}{' ' + brief if brief else ''}")
+    if not completed:
+        completed.append(f"路由={route}: 已回答")
+
+    # LLM 提炼 decisions / next_actions（失败自动降级为空）
+    decisions, next_actions = _extract_turn_semantics(question, answer, trace)
+
+    # next_actions 补充活跃 handoff 的后续（保证未完成任务不被遗漏）
+    if active_handoffs:
+        next_actions = list(next_actions)
+        for h in active_handoffs[:3]:
+            goal_short = str(h.get("goal", ""))[:60]
+            next_actions.append(f"继续 handoff {h['task_id']}: {goal_short}")
+
+    evidence_refs: list[str] = []
+    if trace_id:
+        evidence_refs.append(f"trace://{trace_id}")
+    for h in active_handoffs[:2]:
+        evidence_refs.append(f"handoff://{h['task_id']}")
+
+    return log_session_summary(
+        session_id=session_id,
+        goal=question[:120],
+        decisions=decisions,
+        completed=completed[:10],
+        pending=pending_handoffs or None,
+        next_actions=next_actions[:5],
+        evidence_refs=evidence_refs or None,
+        summary=f"路由={route}: {question[:60]}",
+        tool_count=len(tool_calls),
+    )
+
+
 def get_session_logs(date_prefix: str = "", limit: int = 10) -> list[dict[str, Any]]:
-    """读取最近的 session 日志。"""
+    """读取最近的 session 日志。
+
+    按文件修改时间倒序（最新会话优先），只读取 YYYY-MM-DD 命名格式的
+    真实会话文件，跳过 benchmark/夹具文件（如 session.jsonl）——否则
+    字符串排序会让夹具文件永远排在真实日期文件之前，真实 carryover
+    永远读不到。
+    """
     _ensure_dir()
-    files = sorted(_SESSION_LOG_DIR.glob("*.jsonl"), reverse=True)
+    files = sorted(
+        (f for f in _SESSION_LOG_DIR.glob("*.jsonl")
+         if re.match(r"^\d{4}-\d{2}-\d{2}$", f.stem)),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
     logs = []
     for f in files:
         if date_prefix and date_prefix not in f.stem:
@@ -237,8 +353,12 @@ def truncate_old_logs(max_sessions: int = 50) -> int:
     if len(all_logs) <= max_sessions:
         return 0
 
-    # 按文件分组删除
-    files = sorted(_SESSION_LOG_DIR.glob("*.jsonl"), reverse=True)
+    # 按文件分组删除（最新会话优先，仅处理日期命名的真实会话文件）
+    files = sorted(
+        (f for f in _SESSION_LOG_DIR.glob("*.jsonl")
+         if re.match(r"^\d{4}-\d{2}-\d{2}$", f.stem)),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
     to_remove = len(all_logs) - max_sessions
     removed = 0
 

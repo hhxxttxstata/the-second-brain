@@ -1,0 +1,54 @@
+name: Golden Regression
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 跑 pytest 单元测试（LLM 全 mock，无需 API key）
+        run: |
+          python -X utf8 -m pytest tests/ -q --tb=short
+
+      - name: 准备评测环境（最小 vault + DB）
+        env:
+          OBSIDIAN_VAULT: /tmp/test_vault
+        run: |
+          # 最小 vault：日记检索用例需要
+          mkdir -p /tmp/test_vault/diaries /tmp/test_vault/notes
+          echo "# 测试日记" > /tmp/test_vault/diaries/$(date +%F).md
+          echo "今天看了 RAG 相关的资料。" >> /tmp/test_vault/diaries/$(date +%F).md
+          echo "# RAG 笔记" > /tmp/test_vault/notes/rag-notes.md
+          echo "Retrieval-Augmented Generation 要点。" >> /tmp/test_vault/notes/rag-notes.md
+          # 初始化 SQLite
+          python -X utf8 -c "from app.agent.memory_store import init_db; init_db(); print('DB ready')"
+
+      - name: 跑 Golden 回归
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: deepseek-v4-flash
+          LLM_BASE_URL: https://api.deepseek.com/v1
+          OBSIDIAN_VAULT: /tmp/test_vault
+        run: |
+          python -X utf8 -m app.cli eval
+
+      - name: 失败时输出详情
+        if: failure()
+        run: |
+          ls -la agent_data/benchmark/ 2>/dev/null | tail -5
+          cat agent_data/benchmark/benchmark_*.json 2>/dev/null | head -100

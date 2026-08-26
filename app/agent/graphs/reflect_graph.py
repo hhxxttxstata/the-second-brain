@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
@@ -140,7 +139,7 @@ def build_reflect_graph():
     builder.add_edge("analyze", "critique")
     builder.add_edge("critique", "suggest")
     builder.add_edge("suggest", "__end__")
-    _graph = builder.compile(checkpointer=MemorySaver())
+    _graph = builder.compile()
     return _graph
 
 
@@ -154,7 +153,7 @@ def run_reflect(subject: str, content: str, user_id: str = "default_user") -> di
         "success": True, "error": None,
     }
     try:
-        result = graph.invoke(initial, {"configurable": {"thread_id": f"reflect_{uuid.uuid4().hex[:10]}"}})
+        result = graph.invoke(initial)
         latency = int((time.monotonic() - start) * 1000)
         return {"success": True, "analysis": result.get("analysis", ""),
                 "critique": result.get("critique", ""), "suggestions": result.get("suggestions", ""),

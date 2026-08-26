@@ -133,10 +133,16 @@ agent eval --score                # 多维评分卡 V2（含 Failure Taxonomy）
 | 组件 | 文件 | 作用 |
 |---|---|---|
 | Benchmark 规则 Grader | `app/agent/trace.py` `run_benchmark_suite()` | 路由匹配 + required_outcomes + forbidden_actions |
-| 评分卡 V2 (27 维) | `app/agent/scorecard.py` `run_scorecard()` | 统计溯源分析，含 Failure Taxonomy |
+| 评分卡 V3 (23 维) | `app/agent/scorecard.py` `run_scorecard()` | 统计溯源分析，含 Failure Taxonomy；RAG 维度合并为单一检索健康度（v3 取舍：删除无 relevance 标注支撑的 NDCG/Groundedness/Completeness/Citation proxy） |
 | 自评测 (5 维) | `app/agent/self_eval.py` `run_self_eval()` | 启动时健康检查 |
 | LLM Judge (可选) | `app/cli.py` `_grade_with_llm()` | `--llm` 参数启用，定性评判 |
 | Failure Taxonomy | `app/agent/failure_taxonomy.py` | 15 种错误码自动检测 + 聚合分析 |
+
+## 取舍记录（v3）
+
+- **删除 RAG 假精度维度**：`score_rag_ndcg`（代码自认"无法做真正的 NDCG"）、`score_rag_groundedness`、`score_rag_completeness`（= benchmark pass_rate proxy）、`score_rag_citation`——它们测的不是名字说的东西。
+  合并为 **`score_retrieval_health`（检索健康度）**：三个真实可观测数字（检索调用成功率 + 非空结果率 + 输出含来源引用率）。
+- **移除 self_eval 的 overall_score**：存在性指标（vault 文件数/记忆条数）平均出的分数没有性能语义，改为 ✅/⚠️/❌ 状态汇总 + 可执行问题清单（环境健康检查）。
 
 ## Failure Taxonomy
 

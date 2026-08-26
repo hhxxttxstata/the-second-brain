@@ -129,11 +129,13 @@ class ToolRegistry:
                         latency_ms=latency, success=True,
                     )
                     # memory 工具额外触发记忆更新记录
-                    if name in ("write_memory", "update_task_status"):
-                        ct.add_memory_update(
-                            "tool_action",
-                            f"{name}: {str(params.get('content', params.get('task_title', '')))[:60]}",
-                        )
+                    if name in ("write_memory", "update_task_status",
+                                "write_topic_memory", "write_episodic_memory"):
+                        preview = str(params.get("content")
+                                      or params.get("task_title")
+                                      or params.get("topic")
+                                      or "")[:60]
+                        ct.add_memory_update("tool_action", f"{name}: {preview}")
             except Exception:
                 pass
 
@@ -147,6 +149,20 @@ class ToolRegistry:
                 risk_level=tool.risk_level,
                 timestamp=__import__("datetime").datetime.now().isoformat(),
             ))
+            # 失败的工具调用也必须进 trace（否则'声称参数问题'/'工具必须可用'
+            # 这类检查看到的是空轨迹，无法区分"没调用"和"调用失败"）
+            try:
+                from app.agent.trace import get_current_trace
+                ct = get_current_trace()
+                if ct is not None:
+                    ct.add_tool_call(
+                        name=name, params=params,
+                        result_summary="",
+                        latency_ms=latency, success=False,
+                        error=str(exc)[:200],
+                    )
+            except Exception:
+                pass
             return {"success": False, "error": str(exc)}
 
     def _audit(self, record: ToolCallAudit) -> None:

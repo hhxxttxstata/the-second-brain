@@ -75,6 +75,13 @@ def init_db() -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
             USING fts5(content, memory_type, tokenize='unicode61');
     """)
+    # recency 字段迁移（旧库无此列；幂等）
+    for col, decl in (("last_accessed_at", "TEXT DEFAULT ''"),
+                      ("access_count", "INTEGER DEFAULT 0")):
+        try:
+            conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {decl}")
+        except Exception:
+            pass  # 列已存在
     conn.commit()
     _rebuild_fts(conn)
 
@@ -112,9 +119,9 @@ def add_memory(
 
     cursor = conn.execute(
         """INSERT INTO memories (memory_type, content, tags, importance, source,
-                                 session_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (memory_type, content, tags_json, importance, source, session_id, now, now),
+                                 session_id, created_at, updated_at, last_accessed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (memory_type, content, tags_json, importance, source, session_id, now, now, now),
     )
     row_id = cursor.lastrowid
     try:
@@ -231,20 +238,82 @@ def _mark_conflicting(conn: sqlite3.Connection, content: str,
             )
 
 
-def update_profile(data: dict[str, Any]) -> None:
-    """更新/合并 profile。直接用 JSON blob 存成一条 memory。"""
+_PROFILE_VERSION = 2
+
+
+def _load_profile_row(conn: sqlite3.Connection) -> dict | None:
+    """读取 profile 原始存储 (可能是 v1 扁平 dict 或 v2 entries)。"""
+    row = conn.execute(
+        "SELECT id, content FROM memories WHERE memory_type='stable_profile' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        data = json.loads(row["content"])
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    return {"id": row["id"], "data": data}
+
+
+def _profile_entries(stored: dict) -> dict[str, dict]:
+    """把存储内容归一化为 entries 字典（v1 扁平 dict 自动迁移）。"""
+    if stored.get("_profile_version") == _PROFILE_VERSION:
+        return stored.get("entries", {})
+    # v1: 扁平 {字段: 值}
+    return {
+        k: {"value": v, "history": []}
+        for k, v in stored.items()
+        if not k.startswith("_") and v
+    }
+
+
+def update_profile(data: dict[str, Any], source: str = "") -> dict[str, Any]:
+    """更新/合并 profile（条目化存储，保留变更历史与来源）。
+
+    存储格式 (v2): {_profile_version: 2, entries: {字段: {value, source,
+    updated_at, history: [{value, updated_at}]}}}；旧 v1 扁平格式读取时自动迁移。
+
+    Returns:
+        {"changes": ["称谓: 塔塔 → 子拓", ...]} — 本次实际发生的字段变更
+        （value 相同或空值不产生变更）。
+    """
     conn = _get_conn()
     now = datetime.now().isoformat()
-    content = json.dumps(data, ensure_ascii=False)
+    row = _load_profile_row(conn)
+    entries = _profile_entries(row["data"]) if row else {}
 
-    existing = conn.execute(
-        "SELECT id FROM memories WHERE memory_type='stable_profile' ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
+    changes: list[str] = []
+    for key, value in data.items():
+        if key.startswith("_") or not value:
+            continue
+        value_str = str(value)[:200]
+        entry = entries.get(key)
+        if entry and entry.get("value") == value_str:
+            continue
+        history = list(entry.get("history", [])) if entry else []
+        if entry:
+            history.append({"value": entry["value"], "updated_at": entry.get("updated_at", "")})
+            changes.append(f"{key}: {entry['value']} → {value_str}")
+        else:
+            changes.append(f"{key}: 新增 {value_str}")
+        entries[key] = {
+            "value": value_str,
+            "source": source or "",
+            "updated_at": now,
+            "history": history[-5:],  # 只保留最近 5 次变更
+        }
 
-    if existing:
+    if not changes:
+        return {"changes": []}
+
+    content = json.dumps(
+        {"_profile_version": _PROFILE_VERSION, "entries": entries},
+        ensure_ascii=False,
+    )
+    if row:
         conn.execute(
             "UPDATE memories SET content=?, updated_at=? WHERE id=?",
-            (content, now, existing["id"]),
+            (content, now, row["id"]),
         )
     else:
         conn.execute(
@@ -253,6 +322,7 @@ def update_profile(data: dict[str, Any]) -> None:
             (content, now, now),
         )
     conn.commit()
+    return {"changes": changes}
 
 
 def save_message(session_id: str, role: str, content: str) -> int:
@@ -306,17 +376,28 @@ def save_plan_history(plan_id: str, date: str, summary: str,
 
 
 def get_profile() -> dict[str, Any]:
-    """获取最新的 profile 数据。"""
+    """获取最新的 profile 数据（扁平 dict 视图，兼容 v1/v2 存储）。"""
     conn = _get_conn()
-    row = conn.execute(
-        "SELECT content FROM memories WHERE memory_type='stable_profile' ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
-    if not row:
+    row = _load_profile_row(conn)
+    if row is None:
         return {}
-    try:
-        return json.loads(row["content"])
-    except (json.JSONDecodeError, TypeError):
-        return {}
+    entries = _profile_entries(row["data"])
+    return {k: e.get("value") for k, e in entries.items() if e.get("value")}
+
+
+def get_profile_history(field: str) -> list[dict[str, str]]:
+    """返回某个画像字段的变更历史（最新在前）。"""
+    conn = _get_conn()
+    row = _load_profile_row(conn)
+    if row is None:
+        return []
+    entries = _profile_entries(row["data"])
+    entry = entries.get(field)
+    if entry is None:
+        return []
+    history = list(entry.get("history", []))
+    history.append({"value": entry.get("value"), "updated_at": entry.get("updated_at", "")})
+    return [h for h in reversed(history) if h.get("value")]
 
 
 def search_memories(
@@ -336,27 +417,49 @@ def search_memories(
     conn = _get_conn()
 
     if query.strip():
-        # FTS5 搜索
-        safe_query = query.replace('"', '""').replace("'", "''")
-        sql = """
-            SELECT m.id, m.memory_type, m.content, m.tags, m.importance,
-                   m.source, m.session_id, m.created_at, m.updated_at
-            FROM memories_fts f
-            JOIN memories m ON f.rowid = m.id
-            WHERE memories_fts MATCH ?
-              AND m.deprecated = 0
-        """
-        params: list[Any] = [safe_query]
+        # FTS5 搜索（unicode61 分词对中文整串切词，短词可能无结果 → LIKE 降级）
+        rows = []
+        try:
+            safe_query = query.replace('"', '""').replace("'", "''")
+            sql = """
+                SELECT m.id, m.memory_type, m.content, m.tags, m.importance,
+                       m.source, m.session_id, m.created_at, m.updated_at
+                FROM memories_fts f
+                JOIN memories m ON f.rowid = m.id
+                WHERE memories_fts MATCH ?
+                  AND m.deprecated = 0
+            """
+            params: list[Any] = [safe_query]
 
-        if memory_type:
-            sql += " AND m.memory_type = ?"
-            params.append(memory_type)
-        if min_importance > 0:
-            sql += " AND m.importance >= ?"
-            params.append(min_importance)
+            if memory_type:
+                sql += " AND m.memory_type = ?"
+                params.append(memory_type)
+            if min_importance > 0:
+                sql += " AND m.importance >= ?"
+                params.append(min_importance)
 
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(limit)
+            sql += " ORDER BY rank LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            rows = []
+
+        if not rows:
+            # 降级：LIKE 模糊搜索（FTS 中文短词召回率低时的兜底）
+            sql = """
+                SELECT * FROM memories
+                WHERE deprecated = 0 AND content LIKE ?
+            """
+            params = [f"%{query}%"]
+            if memory_type:
+                sql += " AND memory_type = ?"
+                params.append(memory_type)
+            if min_importance > 0:
+                sql += " AND importance >= ?"
+                params.append(min_importance)
+            sql += " ORDER BY importance DESC, last_accessed_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, params).fetchall()
     else:
         sql = """
             SELECT * FROM memories
@@ -369,10 +472,20 @@ def search_memories(
         if min_importance > 0:
             sql += " AND importance >= ?"
             params.append(min_importance)
-        sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
+        # recency 衰减：重要性优先，其次最近被召回/新增（旧记忆自动沉底）
+        sql += " ORDER BY importance DESC, last_accessed_at DESC, created_at DESC LIMIT ?"
         params.append(limit)
 
     rows = conn.execute(sql, params).fetchall()
+    # recency 记账：被召回的记忆记录访问时间与次数（个人记忆的"记住=被反复用+最近用"）
+    if rows:
+        _now = datetime.now().isoformat()
+        for r in rows:
+            conn.execute(
+                "UPDATE memories SET last_accessed_at=?, access_count=access_count+1 WHERE id=?",
+                (_now, r["id"]),
+            )
+        conn.commit()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -569,7 +682,7 @@ def _load_intent_block(intent: str, entities: list[str],
         topic_paths.append("projects/personal-agent")
 
     # 读取 topic files
-    from .topic_memory import read_topic
+    from .topic_memory import read_topic, get_related_topics
 
     processed_topics: list[str] = []
     for tp in topic_paths:
@@ -582,6 +695,24 @@ def _load_intent_block(intent: str, entities: list[str],
             name = tp.replace("/", "_").replace("-", "_")
             sections.append((f"topic_{name}", f"## {tp}\n{content}", max_c))
             remaining -= max_c
+
+        # 关联一跳：命中 topic 时顺带加载其关联 topic（"面试→简历项目→塔塔"联想）
+        if remaining > 200:
+            try:
+                for rel in get_related_topics(tp):
+                    if rel in processed_topics:
+                        continue
+                    processed_topics.append(rel)
+                    rel_content = read_topic(rel)
+                    if rel_content and "(Topic file not found)" not in rel_content:
+                        max_c = min(len(rel_content), remaining)
+                        name = rel.replace("/", "_").replace("-", "_")
+                        sections.append((f"topic_{name}", f"## {rel}\n{rel_content}", max_c))
+                        remaining -= max_c
+                        if remaining <= 200:
+                            break
+            except Exception:
+                pass
 
     # vault 检索（if budget remains）
     if remaining > 200:
@@ -640,8 +771,19 @@ def build_context(task: str = "", max_tokens: int = 3500,
             text = text[:rem]
         if len(text) > 30:
             parts.append(text)
-            sources.append({"layer": "agent_data", "type": name})
+            sources.append({"layer": "agent_data", "type": name, "chars": len(text)})
             used_chars += len(text)
+
+    # ── Layer 0: 时间锚（个人对话大量依赖时间："上周说的"、"那天你让我记的"） ──
+    try:
+        from datetime import date
+        _weekday = ["一", "二", "三", "四", "五", "六", "日"][date.today().weekday()]
+        _add("time_anchor",
+             f"## 时间锚\n今天是 {date.today().isoformat()} 周{_weekday}；"
+             f"对话中涉及「上周/昨天/那天/最近」等时间表述时，以此日期为基准推算",
+             120)
+    except Exception:
+        pass
 
     # ── Layer 1: System Policy ──
     try:

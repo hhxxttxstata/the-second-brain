@@ -21,8 +21,10 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     # 启动自检
     try:
         eval_report = run_self_eval()
-        logger.info("self_eval_complete", score=eval_report["overall_score"],
-                     issues=len(eval_report.get("issues", [])))
+        ss = eval_report.get("status_summary", {})
+        logger.info("self_eval_complete",
+                    status=f"ok={ss.get('ok', 0)} warn={ss.get('warn', 0)} fail={ss.get('fail', 0)}",
+                    issues=len(eval_report.get("issues", [])))
         for issue in eval_report.get("issues", []):
             logger.warning("self_eval_issue", detail=issue)
     except Exception as exc:

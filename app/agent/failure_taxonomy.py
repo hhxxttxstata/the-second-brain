@@ -218,12 +218,24 @@ def detect_failure_codes(trace: dict[str, Any]) -> list[str]:
         if not has_read_tool:
             codes.append(UNSUPPORTED_CLAIM)
 
-    # 8. M 类：MEMORY_RECALL_MISS
-    # 当 memory 类任务但没有调任何读工具
+    # 8. M 类：MEMORY_RECALL_MISS（区分写/查意图，2026-08 修复误报）
+    # 写记忆任务（已写入/已确认保存）不调用读取工具是正常行为，不是召回缺失；
+    # 只有"查询/回忆类" memory 任务未调用读取工具才判定召回缺失。
     if task_type == "memory":
+        decision = str(trace.get("decision") or "")
         has_read = any(tc.get("name") in ("read_memory", "search_memories") for tc in tool_calls)
         if not has_read:
-            codes.append(MEMORY_RECALL_MISS)
+            # 写意图证据：decision=write/update（含 memory_graph save_trace 的非标准记录）、
+            # memory_updates 非空、或输出确认保存
+            wrote = (
+                decision in ("write", "update")
+                or bool(memory_updates)
+                or any(k in (final_output or "") for k in (
+                    "已保存", "已记录", "已写入", "已记住", "记忆已",
+                    "已存入", "已更新", "已确认", "任务已记录"))
+            )
+            if not wrote:
+                codes.append(MEMORY_RECALL_MISS)
 
     # 去重
     seen = set()

@@ -204,6 +204,82 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         handler=_write_episodic,
     ))
 
+    def _ask_clarification(**kw: Any) -> str:
+        """信息不足时向用户提问澄清（可审计，不猜）。"""
+        from app.agent.memory_store import add_memory
+        question = kw.get("question", "")
+        if not question:
+            return "❌ 缺少 question 参数"
+        try:
+            add_memory(question, memory_type="conversation", tags=["clarification"],
+                       importance=2, source="clarification")
+        except Exception:
+            pass
+        return f"❓ 需要向用户澄清: {question}"
+
+    registry.register_native(RegisteredTool(
+        name="ask_clarification",
+        description="向用户提问澄清。当用户请求信息不足/指代不明（'那个项目'、缺少必要参数）时调用，先问清楚再执行，禁止猜测",
+        schema_={
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "要问用户的问题（具体、单一）"},
+            },
+            "required": ["question"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["记录一次澄清请求到记忆"],
+        handler=_ask_clarification,
+    ))
+
+    def _delete_memory(**kw: Any) -> str:
+        """删除/作废一条记忆（忘记能力）。"""
+        from app.agent.memory_store import _get_conn, search_memories
+        query = kw.get("query", "")
+        memory_type = kw.get("memory_type")
+        memory_id = kw.get("memory_id")
+        conn = _get_conn()
+
+        if memory_id is not None:
+            row = conn.execute(
+                "SELECT id, memory_type, substr(content,1,80) c FROM memories WHERE id=?",
+                (int(memory_id),),
+            ).fetchone()
+            if not row:
+                return f"❌ 记忆 #{memory_id} 不存在"
+            conn.execute(
+                "UPDATE memories SET deprecated=1, superseded_by='user deleted' WHERE id=?",
+                (row["id"],),
+            )
+            conn.commit()
+            return f"✅ 已删除记忆 #{row['id']} [{row['memory_type']}] {row['c'][:60]}"
+
+        # 无 id：先搜索候选，让模型用 memory_id 指定
+        hits = search_memories(query=query or "", memory_type=memory_type, limit=10)
+        if not hits:
+            return "没有找到匹配的记忆"
+        lines = [f"匹配到 {len(hits)} 条记忆（请用 memory_id 指定要删除的）:"]
+        for h in hits:
+            lines.append(f"  #{h['id']} [{h['memory_type']}] {str(h['content'])[:80]}")
+        return "\n".join(lines)
+
+    registry.register_native(RegisteredTool(
+        name="delete_memory",
+        description="删除/作废一条 Agent 记忆。用户说'忘掉/删除我之前说的 X'时使用：先用 query 搜索出候选（返回记忆 id），再用 memory_id 删除指定条目",
+        schema_={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词（无 memory_id 时必填）"},
+                "memory_type": {"type": "string", "description": "可选过滤：episodic/task/conversation 等"},
+                "memory_id": {"type": "integer", "description": "要删除的记忆 id（先搜索拿到候选）"},
+            },
+            "required": ["query"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["作废一条记忆（deprecated）"],
+        handler=_delete_memory,
+    ))
+
     def _update_task(**kw: Any) -> str:
         title = kw.get("task_title", "")
         status = kw.get("status", "done")
@@ -233,6 +309,150 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         source="native", server_name=None,
         risk_level="low", side_effects=["修改 task memory"],
         handler=_update_task,
+    ))
+
+    # ── 跨会话任务连续性工具 ──
+
+    def _propose_action(**kw: Any) -> str:
+        """登记一个待执行/待审批的操作（pending ledger，幂等）。"""
+        from app.agent.pending_ledger import propose_action
+        from app.agent.session import get_default_session
+        description = kw.get("description", "")
+        action_type = kw.get("action_type", "task_op")
+        params = kw.get("params", {})
+        if not description:
+            return "❌ 缺少 description 参数（要执行的操作描述）"
+        if isinstance(params, str):
+            try:
+                params = json.loads(params)
+            except Exception:
+                params = {}
+        rec = propose_action(
+            session_id=get_default_session(),
+            action_type=action_type,
+            description=str(description)[:300],
+            params=params if isinstance(params, dict) else None,
+        )
+        return (f"✅ 已登记待执行操作 [{action_type}]: {str(description)[:80]} "
+                f"(key: {rec['idempotency_key'][:16]}...) 用户回复「同意」后执行")
+
+    registry.register_native(RegisteredTool(
+        name="propose_action",
+        description="登记一个待执行/待审批的操作（幂等，执行前自动查重）。当操作需要用户确认后执行、或本次未完成需要下次继续时使用",
+        schema_={
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "操作描述（人类可读）"},
+                "action_type": {"type": "string", "description": "vault_write/vault_append/task_op/memory_write，默认 task_op"},
+                "params": {"type": "object", "description": "执行参数（JSON 对象）"},
+            },
+            "required": ["description"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["登记待执行操作到 pending_ledger"],
+        handler=_propose_action,
+    ))
+
+    def _create_handoff(**kw: Any) -> str:
+        """创建跨会话任务传递（handoff artifact）。"""
+        from app.agent.handoff import create_handoff
+        goal = kw.get("goal", "")
+        if not goal:
+            return "❌ 缺少 goal 参数（任务目标，一句话）"
+        pending_params = kw.get("pending_params", {})
+        if isinstance(pending_params, str):
+            try:
+                pending_params = json.loads(pending_params)
+            except Exception:
+                pending_params = {}
+        completed = kw.get("completed") or None
+        forbidden = kw.get("forbidden") or None
+        rec = create_handoff(
+            goal=str(goal)[:200],
+            pending_tool=kw.get("pending_tool", ""),
+            pending_params=pending_params if isinstance(pending_params, dict) else None,
+            completed=completed if isinstance(completed, list) else None,
+            next_step=kw.get("next_step", ""),
+            forbidden=forbidden if isinstance(forbidden, list) else None,
+            requires_approval=bool(kw.get("requires_approval", False)),
+        )
+        status = "awaiting_approval" if kw.get("requires_approval") else "in_progress"
+        return (f"✅ 已创建跨会话任务 {rec['task_id']} ({status}): {str(goal)[:80]}"
+                + (f"，待执行工具: {kw.get('pending_tool', '')}" if kw.get("pending_tool") else ""))
+
+    registry.register_native(RegisteredTool(
+        name="create_handoff",
+        description="创建跨会话任务传递（handoff）。当任务本次会话无法完成、需要下次会话继续时使用；下次会话会自动加载该任务并在上下文中注入",
+        schema_={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "任务目标（一句话）"},
+                "pending_tool": {"type": "string", "description": "待执行的工具名"},
+                "pending_params": {"type": "object", "description": "待执行工具的参数（JSON 对象）"},
+                "completed": {"type": "array", "description": "已完成步骤列表", "items": {"type": "string"}},
+                "next_step": {"type": "string", "description": "下一步动作描述"},
+                "forbidden": {"type": "array", "description": "禁止行为列表", "items": {"type": "string"}},
+                "requires_approval": {"type": "boolean", "description": "是否需要用户审批，默认 false"},
+            },
+            "required": ["goal"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["写入 tasks/ + handoffs/ 任务档案"],
+        handler=_create_handoff,
+    ))
+
+    def _complete_handoff(**kw: Any) -> str:
+        """标记跨会话任务为已完成（移入 completed_tasks.jsonl）。"""
+        from app.agent.handoff import complete_handoff
+        task_id = kw.get("task_id", "")
+        if not task_id:
+            return "❌ 缺少 task_id 参数（如 task_001）"
+        result = kw.get("result", "")
+        ok = complete_handoff(task_id, result=result)
+        return f"✅ 已完成任务 {task_id}" if ok else f"❌ 任务 {task_id} 不存在或已在完成列表"
+
+    registry.register_native(RegisteredTool(
+        name="complete_handoff",
+        description="标记跨会话任务（handoff）为已完成，从 active 移入 completed。任务真正完成时必须调用，否则下次会话会继续看到该任务",
+        schema_={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务 ID，如 task_001"},
+                "result": {"type": "string", "description": "完成结果摘要（可选）"},
+            },
+            "required": ["task_id"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["更新 tasks/ 任务档案状态"],
+        handler=_complete_handoff,
+    ))
+
+    def _update_handoff_status(**kw: Any) -> str:
+        """更新跨会话任务状态（不完成）。"""
+        from app.agent.handoff import update_handoff_status
+        task_id = kw.get("task_id", "")
+        if not task_id:
+            return "❌ 缺少 task_id 参数（如 task_001）"
+        status = kw.get("status", "in_progress")
+        next_step = kw.get("next_step", "")
+        ok = update_handoff_status(task_id, new_status=status, new_next_step=next_step)
+        return f"✅ 已更新任务 {task_id} 状态为 {status}" if ok else f"❌ 任务 {task_id} 不存在"
+
+    registry.register_native(RegisteredTool(
+        name="update_handoff_status",
+        description="更新跨会话任务（handoff）的状态（in_progress/blocked 等）或下一步动作，不完成时使用",
+        schema_={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务 ID，如 task_001"},
+                "status": {"type": "string", "description": "in_progress/blocked/approved 等，默认 in_progress"},
+                "next_step": {"type": "string", "description": "更新后的下一步动作（可选）"},
+            },
+            "required": ["task_id"],
+        },
+        source="native", server_name=None,
+        risk_level="low", side_effects=["更新 tasks/ 任务档案状态"],
+        handler=_update_handoff_status,
     ))
 
     # ── 互联网搜索 ──
