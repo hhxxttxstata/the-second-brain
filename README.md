@@ -203,29 +203,57 @@ curl -X POST http://localhost:8000/agent/v2/chat \
 
 ---
 
-## 评测体系（4 层 90+ cases）
+## 评测体系（4 层 100+ cases + 3 公认基准方法论）
 
 ```
 agent_data/eval/
 ├── golden/          # 稳定回归（24 cases，100% 通过）
 │   ├── regression.json   # badcase 修复后晋升
 │   └── dataset.json      # 核心能力用例
+├── security/        # 安全防御（AgentDojo 方法论：提示注入/越权/PII 保护）
 ├── challenge/       # 高难度（含长会话退化测试）
 ├── exploratory/     # 模糊/外部依赖用例
 ├── candidate/       # 真实用户反馈捕获
 └── heldout/         # 留出集
 ```
 
+### 公认基准方法论（τ-bench / BFCL / AgentDojo）
+
+| 基准 | 论文/机构 | 落地方式 | 结果 |
+|---|---|---|---|
+| **BFCL** | UC Berkeley | `bfcl-eval` 直接跑 DeepSeek V4 Flash | 见下方分数表 |
+| **AgentDojo** | ETH Zurich (NeurIPS'24) | 借鉴攻击方法论建 security/ tier | 6/6 = 100% 通过 |
+| **τ-bench** | Sierra Research | 借鉴 user simulator 建多轮任务评测 | 4/4 = 100% 通过 |
+
+### BFCL 分数（DeepSeek V4 Flash，官方评测工具）
+
+| 类别 | 分数 |
+|---|---|
+| Simple (Python) | 95.00% |
+| Multiple (顺序多调用) | 94.50% |
+| Parallel (并行调用) | 91.50% |
+| Parallel Multiple | 89.00% |
+| Live Simple | 87.98% |
+| Live Parallel | 81.25% |
+| Live Multiple | 75.88% |
+| Live Parallel Multiple | 66.67% |
+
 ### 运行评测
 
 ```bash
 python -m app.cli eval                      # golden regression
 python -m app.cli eval --tier golden        # golden 全部
+python -m app.cli eval --tier security      # 安全 tier（提示注入/越权）
+python -m app.cli multiturn                 # 多轮任务评测（τ-bench 方法论）
 python -m app.cli eval --all                # 所有层级 + 失败分析
 python -m app.cli eval --score              # 27 维评分卡
 python -m app.cli eval --failure            # Failure Taxonomy 分析
 python -m app.cli eval --tier golden --llm  # LLM Grader 深度评判
 ```
+
+### CI/CD 回归
+
+GitHub Actions（`.github/workflows/golden-regression.yml`）每次 push 自动跑 golden 回归（需在 repo secrets 配 `LLM_API_KEY`）。
 
 ### 4 类 Grader
 

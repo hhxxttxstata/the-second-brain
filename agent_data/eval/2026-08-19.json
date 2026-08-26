@@ -1,0 +1,131 @@
+{
+  "timestamp": "2026-08-19T18:36:48.293079",
+  "vault": {
+    "status": "✅",
+    "file_count": 64,
+    "total_chars": 130090,
+    "total_tokens_est": 32522,
+    "folders": {
+      "": 2,
+      "Clippings": 7,
+      "diaries": 16,
+      "habbits": 3,
+      "notes": 3,
+      "plan": 3,
+      "知识沉淀": 2,
+      "Agent系统设计": 2,
+      "RAG技术": 3,
+      "项目对比": 2,
+      "技术沉淀": 5,
+      "秋招准备": 7,
+      "评测体系": 2,
+      "项目笔记": 7
+    }
+  },
+  "memory": {
+    "status": "✅",
+    "memory_count": 42195,
+    "detail": {
+      "conversation": 16,
+      "episodic": 390,
+      "stable_profile": 1,
+      "task": 15,
+      "task_plan": 20612,
+      "task_todos": 6,
+      "total_memories": 21040,
+      "total_messages": 108,
+      "profile_fields": [
+        "phone"
+      ],
+      "profile_field_count": 1,
+      "pending_tasks": 6
+    }
+  },
+  "traces": {
+    "status": "✅",
+    "trace_count": 100,
+    "today_traces": 100,
+    "by_type": {
+      "benchmark": 25,
+      "reflect": 22,
+      "plan": 5,
+      "daily_plan": 17,
+      "memory": 5,
+      "chatbot": 26
+    }
+  },
+  "tools": {
+    "status": "✅",
+    "tool_count": 27,
+    "tools": [
+      "search_vault",
+      "read_folder",
+      "read_file",
+      "vault_append",
+      "vault_write",
+      "read_memory",
+      "search_memories",
+      "write_memory",
+      "ask_clarification",
+      "delete_memory",
+      "update_task_status",
+      "propose_action",
+      "create_handoff",
+      "complete_handoff",
+      "update_handoff_status",
+      "search_web",
+      "get_fund_data",
+      "get_github_trending",
+      "get_ai_news",
+      "medical_rag_query",
+      "medical_pe_diagnosis",
+      "generate_excel",
+      "control_visio",
+      "run_code",
+      "read_topic_memory",
+      "write_topic_memory",
+      "search_topic_memory"
+    ],
+    "layers": {
+      "vault_readonly": [
+        "search_vault",
+        "read_folder",
+        "read_file"
+      ],
+      "agent_data_rw": [
+        "read_memory",
+        "update_task_status"
+      ],
+      "external": [
+        "get_fund_data",
+        "get_github_trending",
+        "get_ai_news"
+      ],
+      "medical": [
+        "medical_rag_query",
+        "medical_pe_diagnosis"
+      ]
+    }
+  },
+  "context_quality": {
+    "status": "✅",
+    "context_chars": 2777,
+    "context_tokens_est": 694,
+    "source_count": 6,
+    "source_layers": [
+      "agent_data/memory_index",
+      "agent_data/session_carryover",
+      "agent_data/system_policy",
+      "agent_data/task",
+      "agent_data/time_anchor",
+      "agent_data/topic_projects_personal_agent"
+    ]
+  },
+  "status_summary": {
+    "ok": 5,
+    "warn": 0,
+    "fail": 0
+  },
+  "issues": [],
+  "latency_ms": 1687
+}

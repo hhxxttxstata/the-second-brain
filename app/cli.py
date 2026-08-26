@@ -242,47 +242,31 @@ def cmd_ask(question: str):
         if result.get("result"):
             append_exchange(session_id, question, result["result"])
 
-        # 写 session summary 到 JSONL
-        route = result.get("route", "?")
-        from app.agent.pending_ledger import get_pending_actions
-        pending_keys = [a["idempotency_key"][:20]
-                        for a in get_pending_actions(session_id=session_id, status="pending_approval")]
-        from app.agent.handoff import get_active_handoffs
-        active_handoffs = get_active_handoffs()
-        pending_handoffs = [
-            {"task_id": h["task_id"], "action": h.get("pending_tool", ""), "status": h.get("status", "")}
-            for h in active_handoffs
-        ]
-
-        tool_calls_from_trace = []
+        # 写 session summary 到 JSONL（语义化：工具轨迹 + LLM 提炼 + handoff 关联）
+        trace = None
         try:
             from app.agent.trace import get_latest_trace
             trace = get_latest_trace()
-            if trace:
-                tool_calls_from_trace = trace.get("tool_calls", [])
         except Exception:
             pass
-
-        from app.agent.session_jsonl import log_session_summary
-        log_session_summary(
+        from app.agent.session_jsonl import log_session_summary_semantic
+        log_session_summary_semantic(
             session_id=session_id,
-            goal=question[:120],
-            decisions=[],
-            completed=[f"路由={route}: 已回答"],
-            pending=pending_handoffs or None,
-            next_actions=[f"检查活跃 handoffs: {len(active_handoffs)} 个待处理"],
-            evidence_refs=[f"trace://{result.get('run_id', '?')}"],
-            summary=f"路由={route}: {question[:60]}",
-            tool_count=len(tool_calls_from_trace),
+            question=question,
+            answer=result.get("result", ""),
+            route=result.get("route", "?"),
+            trace=trace,
+            trace_id=result.get("trace_id", "") or result.get("run_id", ""),
         )
     else:
         print(f"❌ 失败: {result.get('error', '未知错误')}")
 
 
 def _cmd_ui():
-    """启动终端 UI"""
-    from app.webui import main as tui_main
-    tui_main()
+    """启动终端 UI（已弃用 — webui 已归档，请使用 chat_web.py / chat.py）"""
+    print("⚠️ 终端 UI (webui) 已弃用并归档。\n"
+          "   主入口: streamlit run app/chat_web.py\n"
+          "   调试入口: python -X utf8 -m app.chat")
 
 
 def cmd_status():
@@ -349,6 +333,90 @@ def cmd_memory(content: str):
     print(result.get("summary", f"❌ {result.get('error', '失败')}"))
 
 
+def _grade_with_llm(cases: list[dict], report: dict) -> None:
+    """LLM-as-judge：对 benchmark 结果做独立定性评判。
+
+    逐 case 把「用例定义 + 实际执行（路由/工具轨迹/输出）」交给 LLM，
+    输出结构化裁决 {verdict: pass|fail|unknown, score: 0-100, reasons}。
+    同时统计与规则 grader 的分歧——分歧即规则判准盲区，需要人工复核。
+
+    注意：judge 与被评 agent 使用同一模型有同源偏差，生产环境建议
+    配置独立 judge 模型（get_chat_model(model=...)）。
+    """
+    from app.agent.graphs.llm import get_chat_model
+    import json as _json
+
+    results = report.get("results", [])
+    if not results:
+        print("  ⚠️ 无 benchmark 结果可评判")
+        return
+    print(f"  🤖 LLM Judge 评判 {len(results)} 个 case...")
+    judge = get_chat_model(temperature=0.2)
+    agree = 0
+    disagree = 0
+    unknown = 0
+    disagree_cases: list[str] = []
+
+    for r in results:
+        case = next((c for c in cases if c.get("intent") == r.get("intent")), {})
+        tool_lines = []
+        for tc in (r.get("tool_calls") or [])[:6]:
+            tool_lines.append(f"- {tc.get('name', '?')}: {str(tc.get('params', {}))[:80]}")
+        prompt = (
+            "你是 Agent 行为评审员。根据用例定义与实际执行，裁决该轮 Agent 行为是否达标。\n"
+            f"## 用例定义\n"
+            f"input: {case.get('input', '')}\n"
+            f"expected_route: {case.get('expected_route', '')}\n"
+            f"required_outcomes: {case.get('required_outcomes', [])}\n"
+            f"forbidden_actions: {case.get('forbidden_actions', [])}\n"
+            f"## 实际执行\n"
+            f"route: {r.get('route', '?')}\n"
+            f"工具调用:\n{chr(10).join(tool_lines) or '(无)'}\n"
+            f"输出: {str(r.get('final_output', ''))[:600]}\n"
+            "## 判定标准\n"
+            "- 路由必须符合 expected_route\n"
+            "- required_outcomes 必须有证据支持（工具调用/输出内容/状态变化），无证据则 fail\n"
+            "- 触发 forbidden_actions 即 fail\n"
+            "- 证据不足无法判断时给 unknown，不要猜\n"
+            "## 输出（仅 JSON）\n"
+            '{"verdict": "pass|fail|unknown", "score": 0-100, "reasons": ["原因1", "原因2"]}'
+        )
+        data = None
+        try:
+            resp = judge.invoke(prompt)
+            text = resp.content if hasattr(resp, "content") else str(resp)
+            if text.startswith("```"):
+                import re
+                text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
+            data = _json.loads(text)
+            verdict = data.get("verdict", "unknown")
+            score = data.get("score", 0)
+        except Exception:
+            verdict, score = "unknown", 0
+
+        rule_ok = bool(r.get("success", False))
+        if verdict == "unknown":
+            unknown += 1
+        elif (verdict == "pass") == rule_ok:
+            agree += 1
+        else:
+            disagree += 1
+            disagree_cases.append(r.get("intent", "?"))
+
+        icon = {"pass": "✅", "fail": "❌", "unknown": "⚠️"}.get(verdict, "?")
+        print(f"    {icon} [{verdict:7s}] {str(r.get('intent', ''))[:18]} "
+              f"(规则={'✅' if rule_ok else '❌'}, LLM={score})")
+        for rs in (data or {}).get("reasons", [])[:2]:
+            print(f"         └ {str(rs)[:90]}")
+
+    total = len(results)
+    print(f"\n  📊 LLM Judge 汇总: 一致 {agree}/{total}, 分歧 {disagree}, 无法判定 {unknown}")
+    if disagree_cases:
+        print(f"  ⚠️ 规则 grader 与 LLM judge 分歧 case: {', '.join(disagree_cases)}")
+        print("     → 请人工复核这些 case（规则可能有判准盲区，优先补充检查规则）")
+    print()
+
+
 def cmd_eval():
     """运行测试集，回归评测。
 
@@ -366,6 +434,16 @@ def cmd_eval():
     flags = set(sys.argv[2:])
     use_llm = "--llm" in flags
     use_score = "--score" in flags
+    use_rules = "--rules" in flags
+
+    if use_rules:
+        from app.agent.grader_rules import describe_rules
+        rules = describe_rules()
+        print(f"📜 当前生效的人工补规则（agent_data/eval/grader_rules.json）: {len(rules)} 条")
+        for r in rules:
+            kind_icon = "🎯" if r["kind"] == "outcome" else "🚫"
+            print(f"  {kind_icon} [{r['id']}] {r['note']}")
+        print()
 
     # 先解析 tier（供 failure 分析和后续共用）
     if "--all" in flags:
@@ -383,6 +461,7 @@ def cmd_eval():
             "challenge": "Challenge",
             "exploratory": "Exploratory",
             "candidate": "Candidate",
+            "security": "Security",
             "all": "所有层级",
         }
         label = label_map.get(tier, tier)
@@ -429,7 +508,22 @@ def cmd_eval():
     print(f"{'='*50}")
     print(f"📊 评测结果 ({label})")
     print(f"  ✅ 通过率: {rate}%")
-    print(f"  ⏱  平均延迟: {avg_lat}ms\n")
+    print(f"  ⏱  平均延迟: {avg_lat}ms")
+
+    # 回归守卫 + 自动回流提示
+    guard = report.get("regression_guard") or {}
+    if guard.get("guarded") and guard.get("dropped"):
+        print(f"  🚨 回归告警: 通过率 {guard.get('prev_pass_rate')}% → {guard.get('cur_pass_rate')}%")
+        regressed = guard.get("regressed_cases", [])
+        if regressed:
+            print(f"     → 退化 case: {', '.join(str(x) for x in regressed)}")
+    elif guard.get("guarded"):
+        print(f"  🛡️ 回归守卫: {guard.get('prev_pass_rate')}% → {guard.get('cur_pass_rate')}%（无退化）")
+    if report.get("auto_captured_candidates"):
+        print(f"  📥 已自动捕获 {report['auto_captured_candidates']} 个失败 case 到 candidate（数据回流）")
+    if report.get("human_rules_applied"):
+        print(f"  📜 人工补规则命中: {', '.join(report['human_rules_applied'])}")
+    print()
 
     for r in report.get("results", []):
         icon = "✅" if r.get("success") else "❌"
@@ -446,12 +540,15 @@ def cmd_eval():
         else:
             print(f"  · 路由: {route}")
 
-        # 约束检查详情
+        # 约束检查详情（三态：True=过 / False=挂 / None=无法判定）
         outcome_detail = r.get("outcome_checks", [])
         for od in outcome_detail:
-            oicon = "✅" if od.get("ok") else "❌"
-            print(f"     {oicon} outcome: {od.get('outcome','')[:70]}")
-            if not od.get("ok"):
+            okv = od.get("ok")
+            oicon = "✅" if okv is True else ("⚠️" if okv is None else "❌")
+            tag = "" if okv is True else (" [unknown]" if okv is None else "")
+            rule_tag = f" [规则:{od.get('rule')}]" if od.get("rule") else ""
+            print(f"     {oicon} outcome: {od.get('outcome','')[:70]}{tag}{rule_tag}")
+            if okv is False:
                 print(f"         └ {od.get('reason','')[:60]}")
         for fh in r.get("forbidden_hits", []):
             print(f"     🚫 forbidden: {fh[:90]}")
@@ -468,6 +565,14 @@ def cmd_eval():
         print("\n🔍 失败分类分析...")
         _show_failure_summary()
     print()
+
+
+def cmd_multiturn():
+    """多轮任务评测 — τ-bench 方法论（user simulator）。"""
+    from app.agent.multi_turn_eval import run_multi_turn_eval, format_multi_turn_report
+    print("🔄 多轮任务评测启动（LLM 模拟用户）...\n")
+    report = run_multi_turn_eval()
+    print(format_multi_turn_report(report))
 
 
 def _show_failure_summary():
@@ -628,6 +733,7 @@ def print_help():
     eval --tier golden --llm                              带 LLM Grader
     eval --all                                             所有层级 + 失败分析
     eval --failure                                        独立失败分析报告
+    multiturn                                           多轮任务评测（τ-bench 方法论）
     persona                                              分析用户性格并更新对话风格
     report                                               一键捕获不满意的输出到 candidate 评测集
     ui                   启动终端 UI
@@ -660,6 +766,7 @@ def main():
         "memory": lambda: cmd_memory(" ".join(sys.argv[2:])),
         "ui": lambda: _cmd_ui(),
         "eval": cmd_eval,
+        "multiturn": cmd_multiturn,
         "persona": cmd_persona,
         "report": cmd_report,
         "status": cmd_status,

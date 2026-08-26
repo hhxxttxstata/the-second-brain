@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Agent</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --panel: #27273a;
+    --accent: #7c9cff;
+    --text: #e6e6f0;
+    --dim: #9a9ab0;
+    --ok: #4caf50;
+    --warn: #ff9800;
+    --err: #f44336;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #1a1a2e;   /* 与窗口背景一致，四角融合 */
+    color: var(--text);
+    user-select: none;
+  }
+
+  /* ═══ 悬浮球（折叠态）═══ */
+  #ball {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 35% 35%, #3d3d5c, #1a1a2e 70%);
+    border-radius: 50%;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5), inset 0 0 12px rgba(124,156,255,.25);
+    cursor: pointer;
+    transition: transform .12s;
+    z-index: 10;
+  }
+  #ball:hover { transform: scale(1.06); }
+  #ball .emoji { font-size: 26px; pointer-events: none; }
+
+  /* ═══ 对话框（展开态）═══ */
+  #panel {
+    position: fixed; inset: 0;
+    display: none;
+    flex-direction: column;
+    background: var(--bg);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,.6);
+    z-index: 5;
+  }
+  #panel.show { display: flex; }
+
+  /* 顶栏：标题 + 收起 */
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--panel);
+  }
+  #topbar .title { font-size: 13px; font-weight: 600; }
+  #topbar .min-btn {
+    cursor: pointer; background: #44445e; border: none; color: var(--text);
+    border-radius: 8px; width: 26px; height: 26px; font-size: 14px;
+  }
+  #topbar .min-btn:hover { background: #55557a; }
+
+  /* 对话区 */
+  #chat {
+    flex: 1; overflow-y: auto;
+    padding: 10px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .msg { max-width: 88%; padding: 8px 10px; border-radius: 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; user-select: text; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #101018; border-bottom-right-radius: 4px; }
+  .msg.ai { align-self: flex-start; background: var(--panel); border-bottom-left-radius: 4px; }
+  .msg.ai .route { font-size: 10px; color: var(--dim); margin-bottom: 2px; }
+
+  /* 反馈按钮 */
+  .fb-row { align-self: flex-start; display: flex; gap: 4px; margin-top: -4px; margin-left: 2px; }
+  .fb-row button {
+    font-size: 11px; padding: 2px 8px; cursor: pointer;
+    background: #33334a; color: var(--dim); border: 1px solid #44445e; border-radius: 10px;
+  }
+  .fb-row button:hover { background: #44445e; color: var(--text); }
+  .fb-row button.done { background: #2a5c3a; color: var(--ok); border-color: var(--ok); }
+
+  /* 输入区 */
+  #inputbar { display: flex; gap: 6px; padding: 10px; background: var(--panel); }
+  #inputbar input {
+    flex: 1; background: #33334a; color: var(--text);
+    border: 1px solid #44445e; border-radius: 8px;
+    padding: 7px 10px; font-size: 13px; outline: none; user-select: text;
+  }
+  #inputbar input:focus { border-color: var(--accent); }
+  #inputbar button {
+    background: var(--accent); color: #101018; border: none;
+    border-radius: 8px; padding: 0 14px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  #inputbar button:disabled { opacity: .5; cursor: wait; }
+
+  /* ═══ 右侧控制条（模型切换 + 红绿灯）═══ */
+  #side {
+    position: fixed; top: 50%; right: 0;
+    transform: translateY(-50%);
+    display: none;
+    flex-direction: column; gap: 8px;
+    background: var(--panel);
+    border-radius: 10px 0 0 10px;
+    padding: 10px 8px;
+    box-shadow: -3px 0 12px rgba(0,0,0,.4);
+    z-index: 20;
+    align-items: center;
+  }
+  #side.show { display: flex; }
+
+  /* 红绿灯（上下文用量） */
+  #light {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: #33334a;
+    box-shadow: 0 0 8px rgba(0,0,0,.4);
+    transition: background .3s, box-shadow .3s;
+  }
+  #light.green { background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  #light.yellow { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+  #light.red { background: var(--err); box-shadow: 0 0 10px var(--err); }
+  #ctxText { font-size: 9px; color: var(--dim); text-align: center; width: 40px; line-height: 1.3; }
+
+  /* 模型切换（竖排下拉） */
+  #modelSelect {
+    writing-mode: vertical-lr;          /* 竖向文字，节省宽度 */
+    background: #33334a; color: var(--text);
+    border: 1px solid #44445e; border-radius: 8px;
+    padding: 4px 2px; font-size: 11px; outline: none;
+    cursor: pointer;
+  }
+  #modelSelect option { writing-mode: horizontal-tb; }
+</style>
+</head>
+<body>
+
+<!-- 悬浮球 -->
+<div id="ball" onclick="expand()">
+  <span class="emoji">🤖</span>
+</div>
+
+<!-- 右侧控制条 -->
+<div id="side">
+  <div id="light" title="上下文用量"></div>
+  <div id="ctxText">–</div>
+  <select id="modelSelect" onchange="switchModel()"></select>
+</div>
+
+<!-- 对话框 -->
+<div id="panel">
+  <div id="topbar">
+    <span class="title">🤖 Agent</span>
+    <button class="min-btn" onclick="collapse()" title="收起">—</button>
+  </div>
+  <div id="chat"></div>
+  <div id="inputbar">
+    <input id="input" placeholder="输入问题...（Enter 发送）" onkeydown="if(event.key==='Enter')send()">
+    <button id="sendBtn" onclick="send()">发送</button>
+  </div>
+</div>
+
+<script>
+const api = window.pywebview.api;
+
+/* ═══ 点击 vs 拖动区分 ═══
+   窗口 frameless + easy_drag=True（整个窗口可拖）
+   JS 判断: mousedown 记录位置，mouseup 时位移 < 5px 视为点击 */
+let press = { x: 0, y: 0, t: 0 };
+
+document.getElementById('ball').addEventListener('mousedown', (e) => {
+  press = { x: e.screenX, y: e.screenY, t: Date.now() };
+});
+
+document.getElementById('ball').addEventListener('mouseup', (e) => {
+  const dx = Math.abs(e.screenX - press.x);
+  const dy = Math.abs(e.screenY - press.y);
+  const dt = Date.now() - press.t;
+  if (dx < 5 && dy < 5 && dt < 500) {
+    expand();   // 没拖动 = 点击 → 展开
+  }
+});
+
+/* ═══ 展开 / 收起 ═══ */
+async function expand() {
+  document.getElementById('ball').style.display = 'none';
+  document.getElementById('panel').classList.add('show');
+  document.getElementById('side').classList.add('show');
+  if (api.expand) await api.expand();
+  loadModels();
+  refreshLight();
+  document.getElementById('input').focus();
+}
+async function collapse() {
+  document.getElementById('panel').classList.remove('show');
+  document.getElementById('side').classList.remove('show');
+  document.getElementById('ball').style.display = 'flex';
+  if (api.collapse) await api.collapse();
+}
+
+/* ═══ 模型切换 ═══ */
+async function loadModels() {
+  try {
+    const models = await api.get_models();
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = '';
+    for (const m of models) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label.split('（')[0];  // 简短显示
+      opt.selected = m.current;
+      sel.appendChild(opt);
+    }
+  } catch (e) { console.error(e); }
+}
+async function switchModel() {
+  const id = document.getElementById('modelSelect').value;
+  try { await api.switch_model(id); } catch (e) { console.error(e); }
+}
+
+/* ═══ 红绿灯（上下文用量）═══ */
+async function refreshLight() {
+  try {
+    const ctx = await api.get_context_status();
+    const light = document.getElementById('light');
+    light.className = ctx.level;   // green/yellow/red
+    document.getElementById('ctxText').textContent =
+      `${Math.round(ctx.usage_ratio * 100)}%`;
+  } catch (e) { console.error(e); }
+}
+
+/* ═══ 消息 ═══ */
+function appendMsg(role, text, route) {
+  const chat = document.getElementById('chat');
+  const div = document.createElement('div');
+  if (role === 'user') {
+    div.className = 'msg user';
+    div.textContent = text;
+  } else if (role === 'system') {
+    div.className = 'msg ai';
+    div.style.color = 'var(--dim)';
+    div.textContent = text;
+  } else {
+    div.className = 'msg ai';
+    if (route) {
+      const r = document.createElement('div');
+      r.className = 'route';
+      r.textContent = '→ ' + route;
+      div.appendChild(r);
+    }
+    const t = document.createElement('div');
+    t.textContent = text;
+    div.appendChild(t);
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+/* ═══ 发送 ═══ */
+async function send() {
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  appendMsg('user', text);
+  const btn = document.getElementById('sendBtn');
+  btn.disabled = true;
+  try {
+    const r = await api.ask(text);
+    if (r && r.success) {
+      const msgDiv = appendMsg('ai', r.result, r.route);
+      addFeedbackRow(msgDiv);
+      refreshLight();
+    } else {
+      appendMsg('ai', '❌ ' + ((r && r.error) || '处理失败'));
+    }
+  } catch (e) {
+    appendMsg('ai', '❌ ' + e);
+  } finally {
+    btn.disabled = false;
+    document.getElementById('input').focus();
+  }
+}
+
+/* ═══ 反馈 ═══ */
+function addFeedbackRow(msgDiv) {
+  const row = document.createElement('div');
+  row.className = 'fb-row';
+  const types = [
+    ['useful', '👍'],
+    ['useless', '👎'],
+    ['tool_wrong', '⚠️'],
+    ['memory_wrong', '🧠'],
+  ];
+  for (const [t, label] of types) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.title = {useful:'有用', useless:'没用', tool_wrong:'工具错', memory_wrong:'记忆错'}[t];
+    b.onclick = async () => {
+      try {
+        await api.send_feedback(t);
+        b.textContent = '✅';
+        b.classList.add('done');
+        b.disabled = true;
+      } catch (e) { console.error(e); }
+    };
+    row.appendChild(b);
+  }
+  msgDiv.appendChild(row);
+}
+</script>
+</body>
+</html>

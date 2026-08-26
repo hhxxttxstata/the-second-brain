@@ -12,12 +12,11 @@ from app.core.logging import logger
 
 
 def handle_chat(text: str) -> str | None:
-    from app.agent.session import get_default_session, load_messages, append_exchange
+    from app.agent.session import get_default_session, append_exchange
     from app.agent.approval_router import route_approval
     from app.agent.pending_ledger import get_pending_actions
 
     session_id = get_default_session()
-    history = load_messages(session_id)
 
     # 检查待审批操作
     pending = get_pending_actions(session_id=session_id, status="pending_approval")
@@ -30,10 +29,11 @@ def handle_chat(text: str) -> str | None:
 
     from app.agent.graphs.orchestrator import run_orchestrator
     try:
+        # 2026-08 改造: 不再手工 load_messages 注入历史 —— 历史由 chatbot 图
+        # 的 SqliteSaver checkpoint 按固定 thread_id=session_id 自动累积。
         r = run_orchestrator(
             input_text=text,
             thread_id=session_id,
-            conversation=history,
         )
         if r.get("success"):
             route = r.get("route", "?")
@@ -42,7 +42,8 @@ def handle_chat(text: str) -> str | None:
             # 写 session 日志
             if result:
                 append_exchange(session_id, text, result)
-            _write_summary(session_id, text, result, route, r.get("run_id", ""))
+            _write_summary(session_id, text, result, route,
+                           r.get("trace_id", "") or r.get("run_id", ""))
 
             return f"🤖 (→ {route})\n\n{result}"
         return f"❌ {r.get('error', '处理失败')}"
@@ -55,33 +56,19 @@ def _say(msg: str) -> None:
 
 
 def _write_summary(session_id: str, question: str,
-                   result: str, route: str, run_id: str) -> None:
-    """写结构化 session summary 到 JSONL。"""
+                   result: str, route: str, trace_id: str) -> None:
+    """写语义化 session summary 到 JSONL（工具轨迹 + LLM 提炼 + handoff 关联）。"""
     try:
-        from app.agent.handoff import get_active_handoffs
         from app.agent.trace import get_latest_trace
-        from app.agent.session_jsonl import log_session_summary
+        from app.agent.session_jsonl import log_session_summary_semantic
 
-        active_handoffs = get_active_handoffs()
-        pending_handoffs = [
-            {"task_id": h["task_id"], "action": h.get("pending_tool", ""), "status": h.get("status", "")}
-            for h in active_handoffs
-        ]
-
-        tool_calls = []
-        trace = get_latest_trace()
-        if trace:
-            tool_calls = trace.get("tool_calls", [])
-
-        log_session_summary(
+        log_session_summary_semantic(
             session_id=session_id,
-            goal=question[:120],
-            completed=[f"路由={route}: 已回答"],
-            pending=pending_handoffs or None,
-            next_actions=[f"检查活跃 handoffs: {len(active_handoffs)} 个待处理"],
-            evidence_refs=[f"trace://{run_id}"],
-            summary=f"路由={route}: {question[:60]}",
-            tool_count=len(tool_calls),
+            question=question,
+            answer=result,
+            route=route,
+            trace=get_latest_trace(),
+            trace_id=trace_id,
         )
     except Exception:
         pass

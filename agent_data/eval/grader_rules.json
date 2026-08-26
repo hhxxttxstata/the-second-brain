@@ -1,0 +1,92 @@
+{
+  "version": 2,
+  "_doc": "规则 grader 人工补规则文件。match=何时适用，check=如何判定（返回 True/False/None；None=证据不足继续走内置分支）。check 类型见 app/agent/grader_rules.py 模块 docstring。新增规则不需要改代码，保存后下次 benchmark 自动生效。",
+  "outcome_rules": [
+    {
+      "id": "out-summary-form",
+      "match": { "any": [ { "contains": ["总结形式"] }, { "all": [ { "contains": ["总结"] }, { "contains": ["逐条"] } ] } ] },
+      "check": { "and": { "checks": [ { "not": { "check": { "output_regex": { "pattern": "(?m)^\\s*(?:\\d+[.、]|[-•*])\\s*\\S" } } } }, { "output_len": { "op": "ge", "value": 10 } } ] } },
+      "note": "exploratory：输出是总结形式而非逐条罗列"
+    },
+    {
+      "id": "out-write-one-by-one",
+      "match": { "any": [ { "contains": ["逐一写入"] }, { "contains": ["不要求用户重复"] } ] },
+      "check": { "or": { "checks": [ { "tool_called": { "tools": ["write_memory", "update_task_status", "write_topic_memory"] } }, { "output_contains": { "keywords": ["已写入", "已记录", "已添加", "逐一"], "min_hits": 1 } } ] } },
+      "note": "跨会话延续：执行逐一写入而非要求用户重述"
+    },
+    {
+      "id": "out-memory-request-accepted",
+      "match": { "any": [ { "contains": ["接受记忆请求"] } ] },
+      "check": { "or": { "checks": [ { "memory_written": {} }, { "output_contains": { "keywords": ["已保存", "已记录", "已写入", "已记住", "记忆已", "已存入", "已更新", "已确认", "画像"], "min_hits": 1 } } ] } },
+      "note": "显式记忆请求被接受：真实写入（memory_updates）或输出确认"
+    },
+    {
+      "id": "out-privacy-isolation-confirmed",
+      "match": { "any": [ { "contains": ["git ignore"] }, { "contains": ["隐私隔离"] } ] },
+      "check": { "output_contains": { "keywords": ["git", "ignore", ".gitignore", "隔离", "不提交", "不进 git", "已确认", "已配置"], "min_hits": 1 } },
+      "note": "隐私记忆：输出必须包含 git ignore 隔离说明（确认已隔离或已配置）"
+    },
+    {
+      "id": "out-multi-plan-content",
+      "match": { "any": [ { "contains": ["计划内容"] }, { "contains": ["计划已生成"] } ] },
+      "check": { "output_contains": { "keywords": ["今日计划", "📋"], "min_hits": 1 } },
+      "note": "多意图：第二个子任务（计划生成）的输出必须出现在最终回复中"
+    }
+  ],
+  "forbidden_rules": [
+    {
+      "id": "forbid-no-context",
+      "match": { "any": [ { "contains": ["没有上下文"] } ] },
+      "check": { "output_contains": { "keywords": ["没有上下文", "我没有上下文", "不清楚上下文", "不知道上下文"], "min_hits": 1 } },
+      "note": "golden 跨会话延续：回答'我没有上下文'即触发"
+    },
+    {
+      "id": "forbid-ask-repeat",
+      "match": { "any": [ { "contains": ["重新描述"] }, { "contains": ["重复任务内容"] }, { "contains": ["重新询问"] } ] },
+      "check": { "output_contains": { "keywords": ["重新描述", "请重新", "请再说", "请重复", "再描述", "是什么任务", "方案是什么"], "min_hits": 1 } },
+      "note": "golden 跨会话延续：要求用户重新描述任务即触发"
+    },
+    {
+      "id": "forbid-dont-remember",
+      "match": { "any": [ { "contains": ["不记得"] }, { "contains": ["我忘了"] } ] },
+      "check": { "output_contains": { "keywords": ["不记得", "我不记得", "忘了", "想不起来"], "min_hits": 1 } },
+      "note": "golden 记忆溯源：回答'我不记得了'（实际有记忆）即触发"
+    },
+    {
+      "id": "forbid-beijing-residual",
+      "match": { "any": [ { "contains": ["北京"] } ] },
+      "check": { "output_contains": { "keywords": ["北京"], "min_hits": 1 } },
+      "note": "candidate：新生成的计划中仍然包含'去北京'即触发"
+    },
+    {
+      "id": "forbid-ignore-phone",
+      "match": { "any": [ { "contains": ["忽略手机号"] }, { "all": [ { "contains": ["手机号"] }, { "contains": ["忽略"] } ] } ] },
+      "check": { "and": { "checks": [ { "tool_not_called": { "tools": ["write_memory", "write_topic_memory", "write_episodic_memory"] } }, { "output_not_contains": { "keywords": ["手机号", "13812345678", "已记录", "已更新"] } } ] } },
+      "note": "golden 工作流隔离：既没写入也没在输出确认新手机号即触发"
+    },
+    {
+      "id": "forbid-plan-only-no-write",
+      "match": { "any": [ { "contains": ["只输出"] }, { "all": [ { "contains": ["写入"] }, { "contains": ["计划"] } ] } ] },
+      "check": { "and": { "checks": [ { "tool_not_called": { "tools": ["write_memory", "write_topic_memory", "vault_write", "vault_append", "write_file", "update_task_status"] } }, { "output_len": { "op": "ge", "value": 10 } } ] } },
+      "note": "candidate：只输出今日计划而未执行任何写入动作即触发"
+    },
+    {
+      "id": "forbid-memory-refused",
+      "match": { "any": [ { "contains": ["拒绝记忆请求"] }, { "contains": ["拒绝记忆"] } ] },
+      "check": { "output_contains": { "keywords": ["无需记忆", "无需重复记忆", "不值得记忆", "拒绝记忆", "跳过记忆", "无法记忆"], "min_hits": 1 } },
+      "note": "显式记忆请求被拒绝（声称无需/不值得记忆）即触发"
+    },
+    {
+      "id": "forbid-gitignore-dismissed",
+      "match": { "any": [ { "contains": ["git ignore"] }, { "contains": ["gitignore"] } ] },
+      "check": { "output_contains": { "keywords": ["无需 git ignore", "无需gitignore", "不需要 git ignore", "不需要gitignore", "无需 git", "不需要 git", "不用 git ignore"], "min_hits": 1 } },
+      "note": "声称无需 git ignore 隔离即触发"
+    },
+    {
+      "id": "forbid-drop-subsequent-intent",
+      "match": { "any": [ { "contains": ["丢弃后续"] } ] },
+      "check": { "output_not_contains": { "keywords": ["今日计划", "计划生成"] } },
+      "note": "多意图：后续意图（计划生成）被丢弃即触发"
+    }
+  ]
+}

@@ -182,19 +182,17 @@ def run_self_eval() -> dict[str, Any]:
         "context_quality": _check_context_quality(),
     }
 
-    # 综合评分
-    scores = []
+    # 状态汇总（不做伪综合分：vault 文件数/记忆条数这类存在性指标
+    # 平均出的分数没有性能语义，只保留可执行的检查清单）
+    status_counts = {"✅": 0, "⚠️": 0, "❌": 0}
     for key in ["vault", "memory", "traces", "tools", "context_quality"]:
         s = report[key]
-        status = s.get("status", "❌")
-        if status == "✅":
-            scores.append(100)
-        elif status == "⚠️":
-            scores.append(50)
-        else:
-            scores.append(0)
-
-    report["overall_score"] = round(sum(scores) / len(scores), 1) if scores else 0
+        status_counts[s.get("status", "❌")] = status_counts.get(s.get("status", "❌"), 0) + 1
+    report["status_summary"] = {
+        "ok": status_counts.get("✅", 0),
+        "warn": status_counts.get("⚠️", 0),
+        "fail": status_counts.get("❌", 0),
+    }
 
     # 问题清单
     issues = []
@@ -229,10 +227,11 @@ def run_self_eval() -> dict[str, Any]:
 
 
 def print_report(report: dict[str, Any]) -> str:
-    """格式化输出评测报告。"""
-    lines = ["\n📊 Agent 自评测报告"]
+    """格式化输出环境健康检查报告。"""
+    lines = ["\n📊 Agent 环境健康检查"]
     lines.append("=" * 50)
-    lines.append(f"综合评分: **{report['overall_score']}/100**\n")
+    ss = report.get("status_summary", {})
+    lines.append(f"状态: ✅ {ss.get('ok', 0)} 项正常 · ⚠️ {ss.get('warn', 0)} 项警告 · ❌ {ss.get('fail', 0)} 项异常\n")
 
     # 各维度
     sections = [

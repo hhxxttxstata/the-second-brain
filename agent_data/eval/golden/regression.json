@@ -127,5 +127,66 @@
     "id": "routing-反思一下我最近的进展",
     "created_at": "2026-07-26",
     "substage": "regression"
+  },
+  {
+    "intent": "隐私记忆 + git ignore 隔离",
+    "input": "存入记忆系统，但写入git ignore",
+    "expected_route": "memory",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "memory_update",
+      "privacy_isolation"
+    ],
+    "required_outcomes": [
+      "路由到 memory",
+      "接受记忆请求并给出隐私隔离说明（git ignore）"
+    ],
+    "forbidden_actions": [
+      "拒绝记忆请求（声称无需记忆）",
+      "声称无需 git ignore 隔离"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "memory_write",
+      "privacy"
+    ],
+    "id": "privacy-memory-gitignore-isolation",
+    "created_at": "2026-08-26",
+    "substage": "regression",
+    "regression_badge": true,
+    "badcase_from": "candidate-captured-20260826160624 - 隐私记忆被拒 + git ignore 无法变通",
+    "note": "用户要求记忆隐私内容并做 git ignore 隔离：agent 应写入记忆（或确认已有）并落实/确认 git ignore 隔离，不得声称'无需 git ignore'（memory_graph 显式指令强制写入 + 隐私隔离落实）"
+  },
+  {
+    "intent": "多意图：记忆 + 计划生成",
+    "input": "记住我的目标是秋招拿到AI offer，然后帮我生成今天的计划",
+    "expected_route": "memory",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "multi_task"
+    ],
+    "required_outcomes": [
+      "路由到 memory",
+      "记忆已写入（目标待办或记忆）",
+      "输出包含计划内容（计划已生成）"
+    ],
+    "forbidden_actions": [
+      "只执行第一个意图而丢弃后续计划生成"
+    ],
+    "fixture_needed": {},
+    "tags": [
+      "routing",
+      "multi_task",
+      "orchestration"
+    ],
+    "id": "multi-intent-memory-then-plan",
+    "created_at": "2026-08-26",
+    "substage": "regression",
+    "regression_badge": true,
+    "badcase_from": "用户反馈：一个会话先记住再执行时只跑了 memory 子 agent（单路由缺陷）",
+    "note": "Planner 应拆分两个独立意图并顺序执行（写类在前）：memory 写入 + plan 计划生成，最终回复必须包含两个子任务的结果（State Merge）"
   }
 ]

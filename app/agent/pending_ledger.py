@@ -118,48 +118,6 @@ def reject_action(key: str) -> bool:
     return cursor.rowcount > 0
 
 
-def mark_executing(key: str) -> bool:
-    """标记为执行中。"""
-    conn = _get_conn()
-    now = datetime.now().isoformat()
-    cursor = conn.execute(
-        "UPDATE pending_actions SET status='executing', updated_at=? WHERE idempotency_key=? AND status='approved'",
-        (now, key),
-    )
-    conn.commit()
-    if cursor.rowcount == 0:
-        return False
-    conn.execute(
-        "INSERT INTO execution_log (idempotency_key, action_type, session_id, status, created_at) "
-        "SELECT idempotency_key, action_type, session_id, 'started', ? FROM pending_actions WHERE idempotency_key=?",
-        (now, key),
-    )
-    conn.commit()
-    return True
-
-
-def mark_executed(key: str, result: str = "", error: str = "") -> None:
-    """标记为已执行。"""
-    conn = _get_conn()
-    now = datetime.now().isoformat()
-    if error:
-        conn.execute(
-            "UPDATE pending_actions SET status='failed', result_summary=?, error=?, updated_at=? WHERE idempotency_key=?",
-            (result[:200], error[:200], now, key),
-        )
-    else:
-        conn.execute(
-            "UPDATE pending_actions SET status='executed', result_summary=?, updated_at=? WHERE idempotency_key=?",
-            (result[:200], now, key),
-        )
-    conn.execute(
-        "INSERT INTO execution_log (idempotency_key, action_type, session_id, status, detail, created_at) "
-        "SELECT idempotency_key, action_type, session_id, ?, ?, ? FROM pending_actions WHERE idempotency_key=?",
-        ("succeeded" if not error else "failed", (result or error)[:200], now, key),
-    )
-    conn.commit()
-
-
 # ── 查 ──
 
 
@@ -187,16 +145,6 @@ def get_action_by_key(key: str) -> dict[str, Any] | None:
         "SELECT * FROM pending_actions WHERE idempotency_key=?", (key,)
     ).fetchone()
     return _row_to_dict(row) if row else None
-
-
-def has_been_executed(key: str) -> bool:
-    """检查是否已执行过（幂等检查）。"""
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT 1 FROM pending_actions WHERE idempotency_key=? AND status IN ('executed', 'executing')",
-        (key,),
-    ).fetchone()
-    return row is not None
 
 
 def get_pending_summary() -> str:

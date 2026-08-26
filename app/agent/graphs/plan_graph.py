@@ -15,7 +15,6 @@ import uuid
 from datetime import date
 from typing import Any, Literal
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
@@ -235,7 +234,7 @@ def build_plan_graph():
     builder.add_edge("plan", "reflect")
     builder.add_conditional_edges("reflect", should_replan, {"commit": "commit", "replan": "plan"})
     builder.add_edge("commit", "__end__")
-    _graph = builder.compile(checkpointer=MemorySaver())
+    _graph = builder.compile()
     return _graph
 
 
@@ -251,9 +250,9 @@ TASK_OPS_PROMPT = """You are a todo/task manager. Parse the user's request into 
 {{
   "ops": [
     {{
-      "action": "add|delete|update|merge|split|skip",
+      "action": "add|delete|update|skip",
       "task_title": "exact title or fuzzy match",
-      "new_title": "for rename/split",
+      "new_title": "for rename",
       "status": "pending|done|in_progress|cancelled",
       "priority": "high|medium|low",
       "dedup": true,
@@ -264,13 +263,13 @@ TASK_OPS_PROMPT = """You are a todo/task manager. Parse the user's request into 
 }}
 
 ## Rules:
-- **merge 规则**: 如果用户说"Add a new task: X"且 existing tasks 里有同名/近似任务 → action=merge|update, dedup=true
-- If user says "merge" or "当做同一个事" or "就当我是说同一个事" or "同一个" → action=merge, dedup=true
+- **merge 规则**: 如果用户说"Add a new task: X"且 existing tasks 里有同名/近似任务 → action=update, dedup=true
+- If user says "merge" or "当做同一个事" or "就当我是说同一个事" or "同一个" → action=update, dedup=true
 - If user says "强制新建" or "不要检查是否重复" → action=add, dedup=false
-- If user says "拆成" or "split" → action=split, new_title=new title
 - If user says "删掉" or "删除" or "取消" → action=delete
 - If user says "标记完成"/"已完成" → action=update, status=done
 - If user explicitly states final intent after changes ("算了，还是..."), use the FINAL intent
+- **拆分/合并任务不再支持**（个人 Agent 保持轻量）: 用户要求"拆成/拆分"时输出 ops=[{{"action":"skip"}}], summary="已简化: 不支持任务拆分，请手动操作"
 - If user input is NOT about task operations → ops=[{{"action":"skip"}}]
 """
 
@@ -329,8 +328,13 @@ def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, An
         title = op.get("task_title", "")
 
         if action == "add":
+            title = (title or op.get("new_title", "")).strip()
+            # 无标题创建 → 拒绝（避免产生 Unnamed 空任务）
+            if not title:
+                changes.append("⚠️ 无法创建：缺少任务标题")
+                continue
             new_todo = {
-                "title": title or op.get("new_title", "Unnamed"),
+                "title": title,
                 "priority": op.get("priority", "medium"),
                 "status": op.get("status", "pending"),
             }
@@ -369,43 +373,8 @@ def run_task_ops(user_input: str, user_id: str = "default_user") -> dict[str, An
                     changes.append(f"已更新: {title}")
                     break
 
-        elif action == "merge":
-            # 同名合并：保留最新状态
-            if todo_list:
-                merged = []
-                for t in todo_list:
-                    ttl = t.get("title", "").strip()
-                    if ttl == title.strip():
-                        if op.get("priority"):
-                            t["priority"] = op["priority"]
-                        if op.get("status"):
-                            t["status"] = op["status"]
-                    merged.append(t)
-                # 去重
-                seen = set()
-                deduped = []
-                for t in merged:
-                    ttl = t.get("title", "").strip()
-                    if ttl in seen:
-                        continue
-                    seen.add(ttl)
-                    deduped.append(t)
-                if len(deduped) < len(merged):
-                    changes.append(f"已合并重复: {title}")
-                if op.get("status") or op.get("priority"):
-                    changes.append(f"已更新: {title} (status={op.get('status','?')})")
-                todo_list = deduped
-
-        elif action == "split":
-            original = [t for t in todo_list if t.get("title", "").strip() == title.strip()]
-            if original:
-                todo_list = [t for t in todo_list if t.get("title", "").strip() != title.strip()]
-                new_titles = op.get("new_title", "").split(",") if op.get("new_title") else []
-                for nt in new_titles:
-                    nt = nt.strip()
-                    if nt:
-                        todo_list.append({"title": nt, "priority": "medium", "status": "pending"})
-                changes.append(f"已拆分: {title} → {', '.join(new_titles)}")
+        # merge/split 分支已移除 (2026-08): 个人 Agent 保持轻量,
+        # 任务拆分/合并不再支持, TASK_OPS_PROMPT 已指示模型对这些请求输出 skip
 
     # 写回
     if changes:
@@ -457,7 +426,7 @@ def run_plan_graph(user_id: str = "default_user",
         "reflect_attempts": 0, "reflect_feedback": "", "latency_ms": 0, "success": True, "error": None,
     }
     try:
-        result = graph.invoke(initial, {"configurable": {"thread_id": initial["run_id"]}})
+        result = graph.invoke(initial)
         latency = int((time.monotonic() - start) * 1000)
         return {"success": True, "plan_id": result.get("plan_id"), "date": plan_date,
                 "items": result.get("plan_items", []), "latency_ms": latency,

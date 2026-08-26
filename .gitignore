@@ -30,3 +30,8 @@ langgraph-main/
 
 # Temp
 temp/
+
+# Runtime logs & pytest artifacts
+debug.log
+.pytest_cache/
+.pytest_tmp/

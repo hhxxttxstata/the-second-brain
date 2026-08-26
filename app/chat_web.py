@@ -12,6 +12,14 @@ Agent Web 对话界面 — Streamlit 单页应用
 """
 from __future__ import annotations
 
+# ── 确保项目根目录在 sys.path ──
+# Streamlit 只把脚本目录（app/）加进 sys.path，不保证项目根（/app 或 D:\MyAgent）
+# 这里显式插入项目根，Docker 和本地运行均可用
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import json
 from datetime import datetime
 
@@ -68,16 +76,16 @@ def _load_history() -> None:
 def _ask(text: str) -> None:
     """调用 orchestrator 并记录 trace。"""
     sid = _get_session_id()
-    history = load_messages(sid)
 
     st.session_state.last_input = text
     st.session_state.messages.append({"role": "user", "content": text})
 
     try:
+        # 2026-08 改造: 不再手工 load_messages 注入历史 —— 历史由 chatbot 图
+        # 的 SqliteSaver checkpoint 按固定 thread_id=session_id 自动累积。
         r = run_orchestrator(
             input_text=text,
             thread_id=sid,
-            conversation=history,
         )
         if r.get("success"):
             result = r.get("result", "")
@@ -87,6 +95,21 @@ def _ask(text: str) -> None:
 
             if result:
                 append_exchange(sid, text, result)
+
+            # 语义化 session summary（工具轨迹 + LLM 提炼 + handoff 关联）
+            try:
+                from app.agent.trace import get_latest_trace
+                from app.agent.session_jsonl import log_session_summary_semantic
+                log_session_summary_semantic(
+                    session_id=sid,
+                    question=text,
+                    answer=result,
+                    route=route,
+                    trace=get_latest_trace(),
+                    trace_id=r.get("trace_id", "") or r.get("run_id", ""),
+                )
+            except Exception:
+                pass
 
             # 拿最新 trace 展示上下文状态
             try:

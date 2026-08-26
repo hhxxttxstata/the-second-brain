@@ -40,6 +40,21 @@ init_db()
 # ── 兼容层：保持旧函数签名，底层用 SQLite ──
 
 
+def _trace_memory_update(memory_type: str, preview: str) -> None:
+    """把一次直接记忆写入记录到当前 trace（registry 工具之外的路径也要记全）。
+
+    plan_graph / task_ops / memory_agent 直接调用本模块写入记忆时，
+    tool_calls 为空，但 memory_updates 必须记上，否则记忆类检查看不到证据。
+    """
+    try:
+        from app.agent.trace import get_current_trace
+        ct = get_current_trace()
+        if ct is not None:
+            ct.add_memory_update(memory_type, str(preview)[:100])
+    except Exception:
+        pass
+
+
 def read_memory(memory_type: str) -> dict[str, Any]:
     """读取记忆（兼容旧接口）。"""
     if memory_type == "stable_profile":
@@ -55,10 +70,18 @@ def read_memory(memory_type: str) -> dict[str, Any]:
 
 
 def write_memory(memory_type: str, data: dict[str, Any],
-                 merge: bool = True) -> None:
-    """写入记忆（兼容旧接口）。"""
+                 merge: bool = True, source: str = "") -> dict[str, Any]:
+    """写入记忆（兼容旧接口）。
+
+    Returns:
+        {"changes": [...]} — stable_profile 返回实际发生的字段变更，
+        其余类型返回空变更列表。
+    """
     if memory_type == "stable_profile":
-        sql_update_profile(data)
+        changes = sql_update_profile(data, source=source)
+        if changes:
+            _trace_memory_update("stable_profile", "; ".join(changes)[:100])
+        return changes
     elif memory_type == "episodic":
         for entry in data.get("entries", []):
             content = entry.get("content", "")
@@ -68,10 +91,12 @@ def write_memory(memory_type: str, data: dict[str, Any],
                     tags=entry.get("tags", []), importance=3,
                     source="write_memory",
                 )
+                _trace_memory_update("episodic", content)
     elif memory_type == "task":
         todos = data.get("todos", [])
         if todos:
             save_task_todos(todos)
+            _trace_memory_update("task", f"todos={len(todos)} 条")
         for h in data.get("history", []):
             pid = h.get("plan_id", "")
             if pid and not pid.startswith("taskop"):
@@ -79,6 +104,7 @@ def write_memory(memory_type: str, data: dict[str, Any],
                     plan_id=pid, date=h.get("date", ""),
                     summary=h.get("summary", ""), items=h.get("items", []),
                 )
+    return {"changes": []}
 
 
 def _deduplicate_todos(todos: list[dict]) -> list[dict]:
@@ -108,6 +134,7 @@ def add_episodic(content: str, tags: list[str] | None = None) -> None:
     """追加一条情景记忆。"""
     sql_add_memory(content, memory_type="episodic", tags=tags or [],
                    importance=3, source="add_episodic")
+    _trace_memory_update("episodic", content)
 
 
 # ── Stable Profile 更新 ──
