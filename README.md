@@ -11,7 +11,7 @@
 ```
 你写 Obsidian 笔记
     ↓
-Agent 启动 → 读 .md 文件 → Context Builder 拼上下文 → DeepSeek
+Agent 启动 → 读 .md 文件 → Context Builder 拼上下文 → LLM
     ↓
 回答 / 写回新的 .md 文件 / 写入记忆 (SQLite + Topic Files)
     ↓

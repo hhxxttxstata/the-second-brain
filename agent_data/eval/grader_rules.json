@@ -31,6 +31,18 @@
       "match": { "any": [ { "contains": ["计划内容"] }, { "contains": ["计划已生成"] } ] },
       "check": { "output_contains": { "keywords": ["今日计划", "📋"], "min_hits": 1 } },
       "note": "多意图：第二个子任务（计划生成）的输出必须出现在最终回复中"
+    },
+    {
+      "id": "out-idempotency-qa",
+      "match": { "any": [ { "contains": ["幂等"] } ] },
+      "check": { "output_contains": { "keywords": ["幂等", "死循环"], "min_hits": 2 } },
+      "note": "八股问答：回答必须覆盖幂等与死循环的区分"
+    },
+    {
+      "id": "out-schema-qa",
+      "match": { "any": [ { "contains": ["schema"] }, { "contains": ["Schema"] } ] },
+      "check": { "output_regex": { "pattern": "(?i)schema.{0,80}校验|校验.{0,80}schema" } },
+      "note": "八股问答：回答必须覆盖 schema 校验说明"
     }
   ],
   "forbidden_rules": [
@@ -87,6 +99,12 @@
       "match": { "any": [ { "contains": ["丢弃后续"] } ] },
       "check": { "output_not_contains": { "keywords": ["今日计划", "计划生成"] } },
       "note": "多意图：后续意图（计划生成）被丢弃即触发"
+    },
+    {
+      "id": "forbid-exec-error",
+      "match": { "any": [ { "contains": ["处理失败"] }, { "contains": ["执行失败"] } ] },
+      "check": { "output_contains": { "keywords": ["执行失败", "处理失败", "Error code", "400"], "min_hits": 1 } },
+      "note": "链路异常：输出处理失败/400 错误即触发"
     }
   ]
 }
