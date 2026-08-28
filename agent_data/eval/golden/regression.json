@@ -188,5 +188,37 @@
     "regression_badge": true,
     "badcase_from": "用户反馈：一个会话先记住再执行时只跑了 memory 子 agent（单路由缺陷）",
     "note": "Planner 应拆分两个独立意图并顺序执行（写类在前）：memory 写入 + plan 计划生成，最终回复必须包含两个子任务的结果（State Merge）"
+  },
+  {
+    "intent": "八股问答（幂等 + schema）",
+    "input": "在幂等的八股下面回答：那这个幂等能否完全做到防止死循环？；在schema的八股下面回答：代码是如何进行校验schema的？",
+    "expected_route": "chatbot",
+    "stage": "golden",
+    "checks": [
+      "route",
+      "qa_content"
+    ],
+    "required_outcomes": [
+      "路由到 chatbot",
+      "回答包含幂等与死循环的区分说明",
+      "回答包含 schema 校验说明"
+    ],
+    "forbidden_actions": [
+      "返回处理失败错误（执行失败/400）"
+    ],
+    "fixture_needed": {
+      "vault": "需有面试八股笔记（可选，通用知识可答）"
+    },
+    "tags": [
+      "routing",
+      "qa",
+      "chatbot"
+    ],
+    "id": "chatbot-orphan-tool-recovery-qa",
+    "created_at": "2026-08-28",
+    "substage": "regression",
+    "regression_badge": true,
+    "badcase_from": "candidate-captured-20260828173328 - 压力压缩残留孤立 tool 消息导致 400",
+    "note": "历史压力压缩可能残留孤立 tool 消息导致 LLM 400；_sanitize_messages 兜底后应正常回答两个追问"
   }
 ]

@@ -39,6 +39,32 @@ def _chat_messages_reducer(left, right):
     return add_messages(left, right)
 
 
+def _sanitize_messages(messages: list) -> list:
+    """修复残缺消息序列：丢弃无前驱 assistant tool_calls 的孤立 ToolMessage。
+
+    来源（2026-08-28 badcase 定位）:
+      - 压力压缩的 keep 切片按条数截断，可能把早期 ai(tool_calls) 换成摘要，
+        却把其后的 tool 结果留在序列开头 → 孤立 tool；
+      - 会话中断残留（ToolNode 写 checkpoint 后进程退出）。
+    LLM 对"role=tool 但前驱无 tool_calls"的消息直接返回 400。
+    防御性兜底：任何来源的坏序列在调用前都会被修复。
+    """
+    out: list = []
+    pending_calls = 0  # 未配对的 ai tool_calls 数（一条 ai 可含多个 tool_calls）
+    for m in messages:
+        role = getattr(m, "type", "?")
+        if role == "tool":
+            if pending_calls <= 0:
+                continue  # 孤立 tool：前驱已被压缩/缺失，结果无意义，丢弃
+            pending_calls -= 1
+            out.append(m)
+        else:
+            if role == "ai":
+                pending_calls = len(getattr(m, "tool_calls", None) or [])
+            out.append(m)
+    return out
+
+
 class ChatState(TypedDict):
     """Chatbot 图状态: messages 只累积 human/ai/tool 消息, system 独立存放。
 
@@ -183,6 +209,9 @@ def gather_context_node(state: ChatState) -> dict:
                     lines.append(f"{role}: {text}")
             summary_text = "[早期会话压缩摘要]\n" + "\n".join(lines[-30:])
         compressed = [AIMessage(content=summary_text)] + keep
+        # 压缩后修复配对：keep 切片可能把 tool 结果留在开头而前驱 ai(tool_calls)
+        # 已被摘要替代 → 产生孤立 tool 消息（LLM 400），这里统一丢弃
+        compressed = _sanitize_messages(compressed)
         logger.info(
             "chatbot.gather.compressed",
             step=f"♻️ 历史压力压缩: {history_tokens} tokens, "
@@ -201,7 +230,10 @@ def call_model_node(state: ChatState) -> dict:
     tools = get_agent_tools()
     model = get_chat_model().bind_tools(tools)
     # 组装 [最新 system] + [checkpoint 累积的历史]；system 不写回 messages
-    llm_messages = [SystemMessage(content=state.get("system", ""))] + list(state.get("messages", []))
+    # sanitize 兜底：checkpoint 中可能残留孤立 tool 消息（压缩截断/会话中断），
+    # 直接发给 LLM 会 400，调用前统一修复
+    llm_messages = [SystemMessage(content=state.get("system", ""))] + _sanitize_messages(
+        list(state.get("messages", [])))
     response = model.invoke(llm_messages)
     # 记录 LLM 用量到当前 trace（此前 set_llm_stats 无生产调用者, token 恒为 0）
     try:
