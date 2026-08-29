@@ -233,7 +233,7 @@ for i, msg in enumerate(st.session_state.messages):
                           on_click=_submit_feedback, args=("memory_wrong",))
 
 # 输入框
-prompt = st.chat_input("输入你的问题...（plan / 记忆 / 医学 / 数据分析）")
+prompt = st.chat_input("输入你的问题...（plan / 记忆 / 数据分析）")
 if prompt:
     _ask(prompt)
     st.rerun()
