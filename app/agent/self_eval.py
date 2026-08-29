@@ -133,7 +133,6 @@ def _check_tools() -> dict[str, Any]:
             "external": [n for n in tool_names if n in (
                 "get_fund_data", "get_github_trending", "get_ai_news"
             )],
-            "medical": [n for n in tool_names if n.startswith("medical_")],
         }
     }
 
