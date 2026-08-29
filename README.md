@@ -74,6 +74,10 @@ app/
 LLM_API_KEY=sk-你的deepseek-key
 LLM_MODEL=deepseek-chat
 LLM_BASE_URL=https://api.deepseek.com/v1
+
+# 医疗 RAG 服务（可选，Pulmonary_embolism_system）
+MEDICAL_RAG_URL=http://127.0.0.1:8001
+MEDICAL_RAG_API_KEY=
 ```
 
 ### 2. 安装依赖（项目级 venv）
@@ -98,6 +102,7 @@ python -X utf8 -m app.chat
 👤 > plan                     → 读日记 → LLM 生成计划 → 写回 diaries/
 👤 > 记住我喜欢吃辣           → 记忆 Agent 写入（含冲突检测）
 👤 > 帮我分析一下秋招准备     → 反思模式
+👤 > 肺栓塞的CTPA征象有哪些   → 调用医疗 RAG 工具
 👤 > status                   → 系统状态
 👤 > model 2                  → 切换 LLM 模型（model list 查看）
 ```
@@ -149,6 +154,8 @@ curl -X POST http://localhost:8000/agent/v2/chat \
 | `get_fund_data` | 基金净值 |
 | `get_github_trending` | GitHub 热门仓库 |
 | `get_ai_news` | AI 行业动态 |
+| `medical_rag_query` | 医学知识库问答（桥接医疗 RAG 系统） |
+| `medical_pe_diagnosis` | 肺栓塞影像诊断（桥接医疗 RAG 系统） |
 | `generate_excel` | 生成 Excel 报表（openpyxl，含表头/自动列宽） |
 | `control_visio` | 控制 Visio 画流程图（COM 自动化） |
 | `run_code` | 执行 Python 代码（受控目录 + 超时保护） |
@@ -264,6 +271,21 @@ GitHub Actions（`.github/workflows/golden-regression.yml`）每次 push 自动�
 ```
 Trace → Failure Code → Candidate Case → 修复 → Regression Case
 ```
+
+---
+
+## 医疗 RAG 接入（可选）
+
+通过 HTTP 桥接 `Pulmonary_embolism_system`（肺栓塞医学知识库 + 影像推理）：
+
+```bash
+# 启动医疗 RAG 服务（另一个项目）
+cd D:\Pulmonary_embolism_system
+API_PORT=8001 python app.py
+# 或 docker compose up（8001:8000）
+```
+
+之后 Agent 会自动路由医学问题（肺栓塞/CTPA/血栓/医学文献）到 `medical_rag_query` 工具，从医学知识库检索回答。服务不可达时优雅降级（如实告知，不编造）。
 
 ---
 

@@ -31,9 +31,6 @@ langgraph-main/
 # Temp
 temp/
 
-# PowerShell/cmd 误重定向产物（`> $null` 会创建此文件）
-$null
-
 # Runtime logs & pytest artifacts
 debug.log
 .pytest_cache/

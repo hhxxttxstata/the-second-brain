@@ -5,6 +5,7 @@
   Tools (agent 看到的扁平列表)
   ├── @tool search_vault           (Native)
   ├── @tool write_memory           (Native)
+  ├── @tool medical_rag_query      (Native, HTTP 桥接)
   └── ... (全部 Native)
 ─────────────────────────────────────────────────────
   Tool Registry
