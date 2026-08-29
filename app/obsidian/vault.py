@@ -16,6 +16,16 @@ from app.core.config import settings
 VAULT_ROOT = Path(settings.obsidian_vault)
 
 
+def _resolve_vault_path(rel_path: str) -> Path | None:
+    """解析相对 vault 的路径；越出 vault 根目录时返回 None（阻止路径穿越）。
+
+    resolve() 会展开符号链接，绝对路径、跨盘符路径的 is_relative_to 自然为 False。
+    """
+    root = VAULT_ROOT.resolve()
+    full = (root / rel_path).resolve()
+    return full if full.is_relative_to(root) else None
+
+
 # ---------------------------------------------------------------------------
 # 文件夹映射
 # ---------------------------------------------------------------------------
@@ -104,7 +114,14 @@ def search_notes(keyword: str, folder: str | None = None,
         max_results: 最多返回条数
         chars_per_match: 每段上下文最大字符数
     """
-    folders = [VAULT_ROOT / folder] if folder else [VAULT_ROOT / f for f in FOLDER_PRIORITY]
+    folders: list[Path]
+    if folder:
+        resolved = _resolve_vault_path(folder)
+        if resolved is None:
+            return f"❌ 路径越界，禁止访问 vault 外文件: {folder}"
+        folders = [resolved]
+    else:
+        folders = [VAULT_ROOT / f for f in FOLDER_PRIORITY]
     results: list[dict] = []
 
     for folder_path in folders:
@@ -165,7 +182,9 @@ def read_folder(folder: str, file_filter: str | None = None,
         max_files: 最多读取文件数
         max_chars_per_file: 每个文件最大字符数
     """
-    folder_path = VAULT_ROOT / folder
+    folder_path = _resolve_vault_path(folder)
+    if folder_path is None:
+        return f"❌ 路径越界，禁止访问 vault 外文件: {folder}"
     if not folder_path.is_dir():
         return f"文件夹「{folder}」不存在。"
 
@@ -204,7 +223,9 @@ def read_file(rel_path: str, max_chars: int = 20000) -> str:
         rel_path: 相对 vault 的路径，如 "notes/ai-agent-design.md"
         max_chars: 最大字符数
     """
-    full_path = VAULT_ROOT / rel_path
+    full_path = _resolve_vault_path(rel_path)
+    if full_path is None:
+        return f"❌ 路径越界，禁止访问 vault 外文件: {rel_path}"
     if not full_path.exists():
         return f"文件不存在: {rel_path}"
     content = _read_file(full_path, max_chars=max_chars)
@@ -279,8 +300,9 @@ def get_today_context() -> str:
 
 def append_to_file(rel_path: str, content: str) -> str:
     """追加内容到 vault 文件末尾。"""
-    vault_path = Path(settings.obsidian_vault)
-    full = vault_path / rel_path
+    full = _resolve_vault_path(rel_path)
+    if full is None:
+        return f"❌ 路径越界，禁止写入 vault 外文件: {rel_path}"
     if not full.exists():
         return f"❌ 文件不存在: {rel_path}"
     try:
@@ -294,8 +316,9 @@ def append_to_file(rel_path: str, content: str) -> str:
 
 def write_file(rel_path: str, content: str) -> str:
     """覆盖写入 vault 文件。"""
-    vault_path = Path(settings.obsidian_vault)
-    full = vault_path / rel_path
+    full = _resolve_vault_path(rel_path)
+    if full is None:
+        return f"❌ 路径越界，禁止写入 vault 外文件: {rel_path}"
     try:
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content, encoding="utf-8")
