@@ -10,6 +10,12 @@ jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # job 级 env：fork PR 拿不到仓库 secrets（LLM_API_KEY 为空），
+    # 供 "跑 Golden 回归" step 的 if 条件读取（step if 读不到 step 自身 env）
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_MODEL: deepseek-v4-flash
+      LLM_BASE_URL: https://api.deepseek.com/v1
     steps:
       - uses: actions/checkout@v4
 
@@ -39,10 +45,8 @@ jobs:
           python -X utf8 -c "from app.agent.memory_store import init_db; init_db(); print('DB ready')"
 
       - name: 跑 Golden 回归
+        if: env.LLM_API_KEY != ''
         env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: deepseek-v4-flash
-          LLM_BASE_URL: https://api.deepseek.com/v1
           OBSIDIAN_VAULT: /tmp/test_vault
         run: |
           python -X utf8 -m app.cli eval
