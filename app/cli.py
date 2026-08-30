@@ -509,6 +509,16 @@ def cmd_eval():
     print(f"📊 评测结果 ({label})")
     print(f"  ✅ 通过率: {rate}%")
     print(f"  ⏱  平均延迟: {avg_lat}ms")
+    if report.get("suspicious_pass_cases"):
+        print(f"  ⚠️ suspicious_pass: {len(report['suspicious_pass_cases'])} 个 case 仅因 "
+              f"unknown outcome 失败（判准盲区，不再静默放行）: "
+              f"{', '.join(report['suspicious_pass_cases'][:5])}")
+    if report.get("workflow_cases"):
+        print(f"  🧭 Workflow 完成: 步骤 {report.get('workflow_completion_rate')}% | "
+              f"全链路 case {report.get('workflow_case_pass_rate')}% "
+              f"({report['workflow_cases']} 个 workflow case)")
+    if report.get("multi_intent_completion_rate") is not None:
+        print(f"  🎯 多意图完成率: {report['multi_intent_completion_rate']}%")
 
     # 回归守卫 + 自动回流提示
     guard = report.get("regression_guard") or {}
@@ -552,6 +562,27 @@ def cmd_eval():
                 print(f"         └ {od.get('reason','')[:60]}")
         for fh in r.get("forbidden_hits", []):
             print(f"     🚫 forbidden: {fh[:90]}")
+
+        # workflow 逐步断言（issue #9）
+        wf = r.get("workflow")
+        if wf:
+            wf_icon = "✅" if wf.get("complete") else "❌"
+            unk = wf.get("unknown_steps", 0)
+            print(f"     {wf_icon} workflow: {wf.get('completed_steps', 0)}/"
+                  f"{wf.get('total_steps', 0)} 步"
+                  + (f"（unknown {unk} 步）" if unk else ""))
+            for sd in wf.get("steps", []):
+                sok = sd.get("ok")
+                sicon = "✅" if sok is True else ("⚠️" if sok is None else "❌")
+                reason = "; ".join(sd.get("reasons", []))
+                print(f"       {sicon} step: {sd.get('step', '')[:36]} — {reason[:80]}")
+        ic = r.get("intent_completion")
+        if ic:
+            print(f"     🎯 意图完成: {ic['completed_intents']}/{ic['total_intents']} "
+                  f"{ic.get('per_intent', {})}")
+        if r.get("suspicious_pass"):
+            print(f"     ⚠️ suspicious_pass: 旧 grader 会放行，"
+                  f"实际存在 unknown outcome（判准盲区）")
 
         if note and not r.get("success"):
             print(f"     🐛 {note[:80]}")

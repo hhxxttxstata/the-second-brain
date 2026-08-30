@@ -55,6 +55,37 @@
   // 零容忍行为。发生任意一条 → 失败
   // 每个元素也是具体、可判定的条件
 
+  // ── 2b. Workflow 定义 (多步任务 case 选填, issue #9) ──
+
+  "intents": ["新增任务", "合并重复待办", "状态更新"],
+  // 多意图输入的子意图清单（≥2 条才参与 Multi-intent Completion Rate）。
+  // 每个子意图由 expected_workflow 中 intent 字段相同的 step 承载。
+  // 意图级完成度 = 全部对应 step 满足 → 该意图完成；"完成 2/3 意图"的半失败由此呈现。
+
+  "expected_workflow": [
+    {"step": "新增任务 'X'", "intent": "新增任务",
+     "expect_tool": "update_task_status"},
+    {"step": "读取最近日记", "intent": "读取最近日记", "ordered": false,
+     "expect_tool": "search_vault 或 read_folder 或 read_file"},
+    {"step": "合并重复待办", "intent": "合并重复待办",
+     "state_assert": "合并重复任务（同标题）"},
+    {"step": "生成计划", "intent": "生成计划",
+     "expect": "输出格式为计划列表（含标题/优先级）"}
+  ],
+  // 子目标序列。grader 逐 step 断言 + 校验顺序，case 成败 = 全部 step 满足
+  // （unknown step 不放行）。benchmark 报告输出每 case 的 completed_steps / total_steps，
+  // 并聚合成 Workflow Completion Rate 一级指标（scorecard L1B）。
+  // step 字段:
+  //   step         必填，步骤名
+  //   intent       选填，所属子意图（多意图拆分用）
+  //   expect_tool  选填，"A 或 B" 分隔为任一；校验调用成功且按序
+  //   state_assert 选填，终态断言。增量语法走运行前快照比对:
+  //                  "todo 出现（新增 N 条）" / "episodic 新增 N 条" / "…status=pending"
+  //                其余文本复用 required_outcomes 的判定器
+  //   expect       选填，输出断言（复用 outcome 判定器）
+  //   ordered      选填，默认 true：expect_tool 必须出现在上一个 ordered 步骤工具之后；
+  //                独立读取类步骤设 false 以免误杀并行/乱序读取
+
   // ── 3. 环境定义 (golden/challenge 必填) ──
 
   "fixture_needed": {
@@ -165,6 +196,7 @@ exploratory → challenge:
   + forbidden_actions (至少 1 条)
   + 补全 fixture_needed
   + known_issue（如果当前失败）
+  + 多步/多意图 case 补 expected_workflow / intents（issue #9）
 
 challenge → golden:
   + 补全 required_outcomes (≥2 条)
