@@ -812,6 +812,15 @@ def build_context(task: str = "", max_tokens: int = 3500,
     except Exception:
         pass
 
+    # ── Layer 3.5: Evolution — 自进化策略与技能（reflect→update 闭环产物） ──
+    try:
+        from .evolution.update import build_evolution_block
+        evo = build_evolution_block(task=task, max_chars=900)
+        if evo:
+            _add("evolution", evo, 900)
+    except Exception:
+        pass
+
     # ── Layer 4: Active Tasks ──
     todos = get_all_todos()
     if todos:

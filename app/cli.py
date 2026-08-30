@@ -306,6 +306,80 @@ def cmd_status():
     print(f"\n📎 Dashboard: {API_BASE}/observability/dashboard")
 
 
+def cmd_evolve():
+    """自进化：蒸馏 trace → 生成/验证策略 → 固化 skill"""
+    args = sys.argv[2:]
+    if args and args[0] == "status":
+        _evolve_status()
+        return
+    dry_run = "--dry-run" in args
+    force = "--force" in args
+
+    from app.agent.evolution.runner import evolve_now
+    from app.agent.evolution import experience as exp
+
+    print("🧬 自进化闭环启动\n")
+    s = exp.status_summary()
+    print(f"  Trace 总数: {s['trace_count']}（未蒸馏: {s['undistilled_count']}）")
+    print(f"  上次蒸馏: {s['last_distilled_at'][:16]}")
+    print(f"  累计蒸馏: {s['distill_count']} 次, 自动进化: {s['auto_evolve_count']} 次\n")
+
+    if dry_run:
+        print("  [dry-run] 只做数据准备，不调用 LLM、不写入\n")
+    report = evolve_now(force=force, dry_run=dry_run)
+
+    d = report.get("distill", {})
+    if d.get("skipped"):
+        print(f"  ⏭️  蒸馏跳过: {d.get('reason')}")
+    elif d.get("dry_run"):
+        print(f"  🔬 [dry-run] 蒸馏批: {d.get('batch_size')} 条 trace")
+        print(f"     prompt 预览:\n{d.get('prompt_preview', '')[:600]}")
+    elif d.get("success"):
+        print(f"  ✅ 蒸馏完成: {d.get('batch_size')} 条 trace → "
+              f"{d.get('experiences')} 条经验, {d.get('policy_suggestions')} 条策略建议")
+        a = d.get("applied", {})
+        print(f"     episodic+{a.get('episodic', 0)}, lessons+{a.get('lessons', 0)}, "
+              f"decisions+{a.get('decisions', 0)}")
+        pr = d.get("policy_result") or {}
+        if pr.get("added"):
+            print(f"     ➕ 新增策略: {pr.get('added')}, 刷新: {pr.get('refreshed')}")
+    else:
+        print(f"  ❌ 蒸馏失败: {d.get('error')}")
+
+    u = report.get("update")
+    if u and u.get("success") is not False:
+        print(f"\n  📈 策略验证: 评估 {u.get('evaluated', 0)} 条, "
+              f"固化 skill {len(u.get('promoted', []))} 条, 退役 {len(u.get('retired', []))} 条")
+    if dry_run:
+        print("\n  （dry-run 结束，未产生任何写入）")
+
+
+def _evolve_status():
+    from app.agent.evolution.runner import status as evo_status
+
+    s = evo_status()
+    ex = s["experience"]
+    print("🧬 自进化状态\n")
+    print(f"  Trace 总数: {ex['trace_count']}（未蒸馏: {ex['undistilled_count']}）")
+    by_type = "  ".join(f"{k}={v}" for k, v in ex["by_task_type"].items())
+    print(f"  按类型: {by_type}")
+    print(f"  上次蒸馏: {ex['last_distilled_at'][:16]}")
+    print(f"  累计: 蒸馏 {ex['distill_count']} 次 / 自动进化 {ex['auto_evolve_count']} 次")
+
+    print("\n  📋 策略:")
+    if not s["policies"]:
+        print("    （暂无）")
+    for p in s["policies"]:
+        mark = {"active": "✅", "proposed": "⏳", "retired": "⛔"}.get(p["status"], "·")
+        print(f"    {mark} [{p['task_type']}] score={p['score']} {p['action']}")
+
+    print("\n  🛠️  Skills:")
+    if not s["skills"]:
+        print("    （暂无，策略连续有效 3 次后自动固化）")
+    for k in s["skills"]:
+        print(f"    · {k['name']} ({k['path']})")
+
+
 def cmd_reflect(content: str):
     """反思分析"""
     if not content:
@@ -782,6 +856,7 @@ def print_help():
     multiturn                                           多轮任务评测（τ-bench 方法论）
     persona                                              分析用户性格并更新对话风格
     report                                               一键捕获不满意的输出到 candidate 评测集
+    evolve [status|--dry-run|--force]   自进化: 蒸馏 trace→策略→skill 固化
     ui                   启动终端 UI
     status               系统状态
     help                 显示帮助
@@ -816,6 +891,7 @@ def main():
         "persona": cmd_persona,
         "report": cmd_report,
         "status": cmd_status,
+        "evolve": cmd_evolve,
         "help": print_help,
     }
 
