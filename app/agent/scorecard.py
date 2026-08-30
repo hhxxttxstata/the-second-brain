@@ -8,6 +8,10 @@
     1.3 Constraint Satisfaction Rate       5%
     1.4 False Completion Rate              2%
 
+  Level 1B — 任务完备性 (Workflow)       权重 8%   ← issue #9 新增
+    1B.1 Workflow Completion Rate          5%   （expected_workflow 逐步断言）
+    1B.2 Multi-intent Completion Rate      3%   （多意图半失败呈现）
+
   Level 2 — 路由与推理                   权重 20%
     2.1 Routing Accuracy                  10%
     2.2 Latency Performance               10%
@@ -218,6 +222,70 @@ def _score_constraint() -> dict[str, Any]:
     }
 
 
+def _score_workflow_completion() -> dict[str, Any]:
+    """1B.1 Workflow Completion Rate — 任务完备性（issue #9）
+
+    从最新 benchmark 读取 expected_workflow 的逐步断言结果：
+    - 步骤级: completed_steps / total_steps
+    - case 级: 全部 step 满足（complete=True）的 case 占比
+    与 L5 Trajectory Efficiency（效率面）分开呈现，避免互相稀释。
+    """
+    bm_files = sorted(_BENCHMARK_DIR.glob("benchmark_*.json"), reverse=True)
+    if not bm_files:
+        return {"score": None, "detail": "无 benchmark（不参与加权）"}
+    latest = json.loads(bm_files[0].read_text(encoding="utf-8"))
+    wf_cases = [r for r in latest.get("results", []) if r.get("workflow")]
+    if not wf_cases:
+        return {"score": None, "detail": "无 workflow 用例（不参与加权）"}
+    total = sum(r["workflow"].get("total_steps", 0) for r in wf_cases)
+    done = sum(r["workflow"].get("completed_steps", 0) for r in wf_cases)
+    if not total:
+        return {"score": None, "detail": "workflow 步骤数为 0（不参与加权）"}
+    step_rate = round(done / total * 100, 1)
+    passed = sum(1 for r in wf_cases if r["workflow"].get("complete"))
+    case_rate = round(passed / len(wf_cases) * 100, 1)
+    score = round(step_rate * 0.5 + case_rate * 0.5, 1)
+    return {
+        "score": score,
+        "detail": (f"步骤 {done}/{total} ({step_rate}%), "
+                   f"全链路 case {passed}/{len(wf_cases)} ({case_rate}%)"),
+        "step_rate": step_rate,
+        "case_rate": case_rate,
+        "workflow_cases": len(wf_cases),
+    }
+
+
+def _score_multi_intent_completion() -> dict[str, Any]:
+    """1B.2 Multi-intent Completion Rate — 多意图半失败呈现（issue #9）
+
+    一条输入含多个意图时按意图拆分：completed_intents / total_intents，
+    "完成 2/3 意图"不再是整体 PASS/FAIL 的黑箱。
+    """
+    bm_files = sorted(_BENCHMARK_DIR.glob("benchmark_*.json"), reverse=True)
+    if not bm_files:
+        return {"score": None, "detail": "无 benchmark（不参与加权）"}
+    latest = json.loads(bm_files[0].read_text(encoding="utf-8"))
+    mi_cases = [r for r in latest.get("results", []) if r.get("intent_completion")]
+    if not mi_cases:
+        return {"score": None, "detail": "无多意图用例（不参与加权）"}
+    ti = sum(r["intent_completion"].get("total_intents", 0) for r in mi_cases)
+    ci = sum(r["intent_completion"].get("completed_intents", 0) for r in mi_cases)
+    if not ti:
+        return {"score": None, "detail": "意图数为 0（不参与加权）"}
+    rate = round(ci / ti * 100, 1)
+    partial = [f"{r.get('intent', '?')} "
+               f"{r['intent_completion']['completed_intents']}/"
+               f"{r['intent_completion']['total_intents']}"
+               for r in mi_cases
+               if r["intent_completion"]["completed_intents"]
+               < r["intent_completion"]["total_intents"]]
+    detail = f"{ci}/{ti} 意图完成 ({rate}%)"
+    if partial:
+        detail += f"; 半失败: {', '.join(partial[:3])}"
+    return {"score": rate, "detail": detail,
+            "total_intents": ti, "completed_intents": ci}
+
+
 def _score_false_completion() -> dict[str, Any]:
     """1.4 False Completion Rate
 
@@ -403,7 +471,11 @@ def _score_tool_output_utilization() -> dict[str, Any]:
 
 
 def _score_trajectory_efficiency() -> dict[str, Any]:
-    """5.4 Trajectory Efficiency"""
+    """5.4 Trajectory Efficiency — 仅度量"走得顺不顺"（效率面）
+
+    平均调用数 / 重复率 / 循环率。完备性（该走的路走全了没有）由
+    L1B Workflow Completion Rate 单独度量（issue #9），两者分开呈现避免稀释。
+    """
     traces = sorted(_TRACE_DIR.glob("trace_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]
     counts = []
     repeated = 0
@@ -1126,6 +1198,9 @@ WEIGHTS_V2 = {
     "score_end_state": 0.08,
     "score_constraint": 0.05,
     "score_false_completion": 0.02,
+    # Level 1B — 任务完备性 (8%, issue #9；无 workflow 用例时自动跳过不参与加权)
+    "score_workflow_completion": 0.05,
+    "score_multi_intent_completion": 0.03,
     # Level 2 — 检索健康度（原 5 个 RAG proxy 维度合并为 1 个真实可观测维度）
     "score_retrieval_health": 0.10,
     # Level 3 — 路由与推理 (20%)
@@ -1159,6 +1234,8 @@ LEVEL_LABELS = {
     "score_end_state": "L1-状态正确性",
     "score_constraint": "L1-约束满足率",
     "score_false_completion": "L1-虚假完成率",
+    "score_workflow_completion": "L1B-Workflow完成率",
+    "score_multi_intent_completion": "L1B-多意图完成率",
     "score_retrieval_health": "L2-检索健康度",
     "score_routing": "L3-路由准确",
     "score_latency": "L3-延迟性能",
@@ -1185,6 +1262,8 @@ LEVEL_PARENTS = {
     "score_end_state": "L1 端到端任务结果 (30%)",
     "score_constraint": "L1 端到端任务结果 (30%)",
     "score_false_completion": "L1 端到端任务结果 (30%)",
+    "score_workflow_completion": "L1B 任务完备性 (8%)",
+    "score_multi_intent_completion": "L1B 任务完备性 (8%)",
     "score_retrieval_health": "L2 检索健康度 (10%)",
     "score_routing": "L3 路由与推理 (20%)",
     "score_latency": "L3 路由与推理 (20%)",
@@ -1217,6 +1296,8 @@ def run_scorecard() -> dict[str, Any]:
         "score_end_state": _score_end_state,
         "score_constraint": _score_constraint,
         "score_false_completion": _score_false_completion,
+        "score_workflow_completion": _score_workflow_completion,
+        "score_multi_intent_completion": _score_multi_intent_completion,
         "score_retrieval_health": _score_retrieval_health,
         "score_routing": _score_routing,
         "score_latency": _score_latency,

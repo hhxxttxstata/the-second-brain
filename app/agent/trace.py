@@ -369,6 +369,10 @@ def _auto_capture_failures(results: list[dict], cases: list[dict]) -> int:
     for r in results:
         if r.get("success"):
             continue
+        if r.get("suspicious_pass"):
+            # 判准盲区（grader unknown）而非 agent 失败 → 不回流 candidate，
+            #回流只会把 grader 问题伪装成 agent 回归。修 grader 规则才是正解。
+            continue
         case = next((c for c in cases if c.get("intent") == r.get("intent")), {})
         inp = case.get("input") or r.get("input", "")
         if not inp or inp in existing:
@@ -392,6 +396,8 @@ def _auto_capture_failures(results: list[dict], cases: list[dict]) -> int:
                 "unknown_outcomes": r.get("unknown_outcomes", 0),
                 "forbidden_hits": r.get("forbidden_hits", []),
                 "tool_calls": len(r.get("tool_calls", [])),
+                "completed_steps": r.get("completed_steps"),
+                "total_steps": r.get("total_steps"),
                 "output_preview": str(r.get("final_output", ""))[:300],
             },
         }
@@ -423,6 +429,9 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
     for case in test_cases:
         # 预置 fixture（如需）
         setup_fixture(case)
+
+        # 运行前状态快照（workflow state_assert 增量比对的基线）
+        state_before = _snapshot_state()
 
         r: dict[str, Any] = {}
         with TraceSession("benchmark", case["intent"]) as trace:
@@ -475,18 +484,20 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         outcome_checks, forbidden_hits, outcome_detail, unknown_outcomes, rules_used = (
             _check_case_constraints(case, trace_dict, r)
         )
-        outcomes_ok = all(oc is not False for oc in outcome_checks)  # None(unknown) 不计入失败
-        forbidden_ok = len(forbidden_hits) == 0
+        # Workflow 级评测（issue #9）：expected_workflow 逐步断言 + 顺序校验
+        workflow_result = _check_expected_workflow(case, trace_dict, state_before)
+        intent_completion = _compute_intent_completion(case, workflow_result)
 
-        # success = 运行成功 + 路由对 + outcomes 全过 + 无 forbidden
-        final_success = trace.success and outcomes_ok and forbidden_ok
+        # 严格判定（issue #9）：unknown 不再放行；仅因 unknown 失败 → suspicious_pass
+        verdict = _judge_case(bool(trace.success), outcome_checks,
+                              forbidden_hits, workflow_result)
+        outcomes_ok = verdict["outcomes_ok"]
+        final_success = verdict["success"]
         if final_success:
             success_count += 1
 
         # 失败码：trace 自身 + 约束失败映射
-        fc = list(trace.failure_codes or [])
-        if not outcomes_ok:
-            fc.append("OUTCOME_NOT_MET")
+        fc = list(trace.failure_codes or []) + verdict["failure_codes"]
         for fh in forbidden_hits:
             fc.append("FORBIDDEN_ACTION")
 
@@ -502,8 +513,14 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
             "outcome_checks": outcome_detail,
             "outcomes_ok": outcomes_ok,
             "unknown_outcomes": unknown_outcomes,
+            "suspicious_pass": verdict["suspicious_pass"],
             "forbidden_hits": forbidden_hits,
             "rules_used": rules_used,
+            # Workflow 完备性（issue #9）：每 case 的 completed_steps / total_steps
+            "workflow": workflow_result,
+            "completed_steps": workflow_result["completed_steps"] if workflow_result else None,
+            "total_steps": workflow_result["total_steps"] if workflow_result else None,
+            "intent_completion": intent_completion,
             # 执行细节（供 LLM judge / 人工复核使用，之前缺失导致 judge 看到空输出）
             "final_output": str(trace_dict.get("final_output", ""))[:600],
             "tool_calls": trace_dict.get("tool_calls", []),
@@ -513,6 +530,7 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         cleanup_fixture()
 
     total = len(test_cases)
+    wf_agg = _aggregate_workflow(results)
     _BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -522,6 +540,13 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         "avg_tokens": round(total_tokens / total) if total else 0,
         "unknown_outcome_count": sum(r.get("unknown_outcomes", 0) for r in results),
         "unknown_cases": sum(1 for r in results if r.get("unknown_outcomes", 0)),
+        # suspicious_pass：旧 grader 会静默放行的 case（判准盲区，issue #9）
+        "suspicious_pass_cases": wf_agg["suspicious_pass_cases"],
+        # Workflow 完备性一级指标（issue #9）
+        "workflow_cases": wf_agg["workflow_cases"],
+        "workflow_completion_rate": wf_agg["workflow_completion_rate"],
+        "workflow_case_pass_rate": wf_agg["workflow_case_pass_rate"],
+        "multi_intent_completion_rate": wf_agg["multi_intent_completion_rate"],
         # 本次评测命中了哪些人工补规则（可观测：规则是否真的被用到）
         "human_rules_applied": sorted({rid for r in results for rid in (r.get("rules_used") or [])}),
         "results": results,
@@ -592,6 +617,316 @@ def _find_inner_trace(user_input: str) -> dict[str, Any] | None:
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Workflow 级评测 — expected_workflow 逐步断言 + 顺序校验（issue #9）
+# ---------------------------------------------------------------------------
+
+_STATUS_ALIASES: dict[str, tuple[str, ...]] = {
+    "pending": ("pending", "待处理", "todo"),
+    "todo": ("pending", "待处理", "todo"),
+    "in_progress": ("in_progress", "进行中", "doing", "active"),
+    "进行中": ("in_progress", "进行中", "doing", "active"),
+    "done": ("done", "完成", "completed"),
+    "completed": ("done", "完成", "completed"),
+}
+
+
+def _snapshot_todos() -> list[dict[str, str]]:
+    try:
+        from app.agent.agent_data_service import read_memory
+        td = read_memory("task") or {}
+        return [{"title": str(t.get("title", "")), "status": str(t.get("status", ""))}
+                for t in td.get("todos", [])]
+    except Exception:
+        return []
+
+
+def _snapshot_episodic_count() -> int:
+    try:
+        from app.agent.memory_store import _get_conn
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM memories WHERE memory_type='episodic' AND deprecated=0"
+        ).fetchone()
+        return int(row["n"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _snapshot_state() -> dict[str, Any]:
+    """case 运行前的环境状态快照（workflow state_assert 增量比对的基线）。"""
+    return {
+        "todos": _snapshot_todos(),
+        "episodic_count": _snapshot_episodic_count(),
+    }
+
+
+def _check_state_delta(a: str, before: dict[str, Any]) -> tuple[bool | None, str]:
+    """快照增量类 state_assert："todo 出现（新增 N 条）" / "episodic 新增 N 条" / "…status=x"。
+
+    与运行前快照对比判定"新增"，是工具证据之外的第二类完备性证据。
+    返回 (ok, reason)；非增量语法返回 None（调用方回退到 outcome 判定器）。
+    """
+    import re as _re
+    a_low = a.lower()
+    m_cnt = _re.search(r"新增\s*(\d+)\s*条", a)
+    need = int(m_cnt.group(1)) if m_cnt else 1
+    m_status = _re.search(r"status\s*=\s*([A-Za-z\u4e00-\u9fff_]+)", a)
+
+    if "todo" in a_low or "待办" in a:
+        cur = _snapshot_todos()
+        if not cur:
+            return False, "task_memory 无 todo"
+        prev_titles = {t["title"].strip() for t in (before.get("todos") or [])}
+        fresh = [t for t in cur if t["title"].strip() not in prev_titles]
+        # 显式"新增 N 条"才严格比对增量；只写"出现"则存在即算（兼容合并/改名终态）
+        if m_cnt is not None and len(fresh) < need:
+            return False, f"新增 todo {len(fresh)} 条 < 期望 {need}"
+        target = fresh[-1] if fresh else cur[-1]
+        if m_status:
+            want = m_status.group(1).strip().lower()
+            st = target["status"].strip().lower()
+            aliases = _STATUS_ALIASES.get(want, (want,))
+            ok = any(x and x in st for x in aliases)
+            return ok, (f"todo '{target['title'][:20]}' status={target['status']} "
+                        f"(期望 {m_status.group(1)})")
+        return True, f"todo 出现（新增 {len(fresh)} 条）"
+
+    if "episodic" in a_low or "情景" in a:
+        delta = _snapshot_episodic_count() - int(before.get("episodic_count") or 0)
+        return (delta >= need), f"episodic 新增 {delta} 条 (期望 ≥{need})"
+
+    return None, "state_assert 非增量语法（回退 outcome 判定器）"
+
+
+def _check_expected_workflow(case: dict[str, Any], trace: dict[str, Any],
+                             state_before: dict[str, Any]) -> dict[str, Any] | None:
+    """按 expected_workflow 逐步断言 + 校验步骤顺序（issue #9）。
+
+    step 定义:
+      {"step": 名,
+       "expect_tool": "t1 或 t2",   # 可选：校验调用成功且按序（"或"分隔为任一）
+       "state_assert": 终态断言,    # 可选：增量语法走快照比对，其余复用 outcome 判定器
+       "expect": 输出断言,          # 可选：复用 outcome 判定器
+       "intent": 所属子意图,        # 可选：多意图 case 拆分半失败用
+       "ordered": False}            # 可选：默认 True（工具必须在上一个 ordered 步骤之后）
+
+    case 成败 = 全部 step 满足（unknown 不放行）；complete = completed_steps == total_steps。
+
+    Returns: None（case 未定义 workflow）或含 total_steps/completed_steps/steps 的字典。
+    """
+    workflow = case.get("expected_workflow") or []
+    if not workflow:
+        return None
+
+    tool_calls = trace.get("tool_calls", []) or []
+    final_output = trace.get("final_output", "") or ""
+    input_text = case.get("input", "")
+    result_data = trace.get("result_data", {}) or {}
+    route = trace.get("route", "?")
+    memory_updates = trace.get("memory_updates", []) or []
+    tool_names = [tc.get("name", "") for tc in tool_calls]
+    tool_success = {tc.get("name"): tc.get("success", True) for tc in tool_calls}
+    expected_route = case.get("expected_route", "")
+    output_lower = final_output.lower()
+
+    steps_detail: list[dict[str, Any]] = []
+    order_violations: list[str] = []
+    anchor = -1  # 上一个 ordered 步骤的工具调用下标（顺序校验锚点）
+
+    for i, sdef in enumerate(workflow):
+        step_name = str(sdef.get("step", f"step{i + 1}"))
+        expect_tool = str(sdef.get("expect_tool", "") or "").strip()
+        state_assert = str(sdef.get("state_assert", "") or "").strip()
+        expect_out = str(sdef.get("expect", "") or "").strip()
+        ordered = sdef.get("ordered", True)
+        reasons: list[str] = []
+        failed = False
+        unknown = False
+
+        # 1) 工具断言 + 顺序校验（后步依赖前步：ordered 步骤的工具必须出现在锚点之后）
+        if expect_tool:
+            candidates = [t.strip() for t in expect_tool.replace("／", "或")
+                          .replace("/", "或").split("或") if t.strip()]
+            if ordered:
+                found = next((j for j, tc in enumerate(tool_calls)
+                              if tc.get("name") in candidates and j > anchor), -1)
+            else:
+                found = next((j for j, tc in enumerate(tool_calls)
+                              if tc.get("name") in candidates), -1)
+            if found < 0:
+                failed = True
+                if any(t in tool_names for t in candidates):
+                    violation = (f"步骤{i + 1}「{step_name}」: {expect_tool} "
+                                 f"出现在前序步骤之前（顺序违规）")
+                    order_violations.append(violation)
+                    reasons.append(f"顺序违规: {expect_tool} 未在上一个 ordered 步骤之后调用")
+                else:
+                    reasons.append(f"未调用工具 {expect_tool}")
+            else:
+                if ordered:
+                    anchor = found
+                if not tool_calls[found].get("success", True):
+                    failed = True
+                    reasons.append(f"工具 {tool_calls[found].get('name')} 调用失败")
+                else:
+                    reasons.append(f"工具 {tool_calls[found].get('name')} 按序调用成功 (#{found + 1})")
+
+        # 2) 终态断言（state_assert：先走快照增量比对，非增量语法回退 outcome 判定器）
+        if state_assert:
+            s_ok, s_reason = _check_state_delta(state_assert, state_before or {})
+            if s_ok is None:
+                s_ok, s_reason = _check_single_outcome(
+                    state_assert, route, expected_route, final_output, output_lower,
+                    tool_names, tool_success, memory_updates, input_text,
+                    tool_calls, result_data,
+                )
+            if s_ok is False:
+                failed = True
+                reasons.append(f"终态断言未满足: {s_reason}")
+            elif s_ok is None:
+                unknown = True
+                reasons.append(f"终态断言无法判定: {s_reason}")
+            else:
+                reasons.append(f"终态断言满足: {s_reason}")
+
+        # 3) 输出断言（expect）
+        if expect_out:
+            e_ok, e_reason = _check_single_outcome(
+                expect_out, route, expected_route, final_output, output_lower,
+                tool_names, tool_success, memory_updates, input_text,
+                tool_calls, result_data,
+            )
+            if e_ok is False:
+                failed = True
+                reasons.append(f"输出断言未满足: {e_reason}")
+            elif e_ok is None:
+                unknown = True
+                reasons.append(f"输出断言无法判定: {e_reason}")
+            else:
+                reasons.append(f"输出断言满足: {e_reason}")
+
+        if not (expect_tool or state_assert or expect_out):
+            unknown = True
+            reasons.append("步骤未定义任何断言字段")
+
+        steps_detail.append({
+            "step": step_name,
+            "intent": sdef.get("intent", ""),
+            "ok": False if failed else (None if unknown else True),
+            "reasons": reasons,
+        })
+
+    total = len(steps_detail)
+    completed = sum(1 for s in steps_detail if s["ok"] is True)
+    unknown_steps = sum(1 for s in steps_detail if s["ok"] is None)
+    return {
+        "total_steps": total,
+        "completed_steps": completed,
+        "unknown_steps": unknown_steps,
+        "complete": completed == total,  # unknown 步骤不计入完成 → 不放行
+        "order_violations": order_violations,
+        "steps": steps_detail,
+    }
+
+
+def _compute_intent_completion(case: dict[str, Any],
+                               workflow_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """多意图 case 的意图级完成度（"完成 2/3 意图"的半失败呈现，issue #9）。
+
+    要求 case 定义 intents（≥2 条）且 expected_workflow 的 step 用 intent 字段
+    映射到子意图；意图未被任何 step 引用时不计入分母（避免假 0），
+    无法拆分时返回 None。
+    """
+    intents = [str(x) for x in (case.get("intents") or [])]
+    if len(intents) < 2 or not workflow_result:
+        return None
+    step_intents = [str(s.get("intent") or "")
+                    for s in (case.get("expected_workflow") or [])]
+    if not any(step_intents):
+        return None
+    steps = workflow_result.get("steps", [])
+    completed = 0
+    total = 0
+    per_intent: dict[str, bool] = {}
+    for it in intents:
+        idxs = [i for i, si in enumerate(step_intents) if si == it]
+        if not idxs:
+            continue
+        total += 1
+        ok = all(steps[i]["ok"] is True for i in idxs if i < len(steps))
+        per_intent[it] = ok
+        if ok:
+            completed += 1
+    if total == 0:
+        return None
+    return {
+        "completed_intents": completed,
+        "total_intents": total,
+        "per_intent": per_intent,
+    }
+
+
+def _judge_case(run_ok: bool, outcome_checks: list[bool | None],
+                forbidden_hits: list[str],
+                workflow_result: dict[str, Any] | None) -> dict[str, Any]:
+    """case 成败判定（严格版，issue #9：unknown 不再静默放行）。
+
+    success = 运行成功 + 全部 outcome 明确满足 + 无 forbidden + workflow 全 step 满足。
+    suspicious_pass: 旧 grader（None 放行）会 PASS、现在仅因 unknown 失败的 case
+    ——它们暴露的是判准盲区而非 agent 失败，单独标注供补 grader 规则。
+    """
+    outcomes_ok = all(oc is True for oc in outcome_checks)
+    forbidden_ok = len(forbidden_hits) == 0
+    workflow_ok = bool(workflow_result.get("complete")) if workflow_result else True
+    success = bool(run_ok and outcomes_ok and forbidden_ok and workflow_ok)
+
+    legacy_ok = all(oc is not False for oc in outcome_checks)
+    suspicious_pass = bool(
+        not success and run_ok and forbidden_ok and workflow_ok
+        and legacy_ok and any(oc is None for oc in outcome_checks))
+
+    failure_codes: list[str] = []
+    if not outcomes_ok:
+        failure_codes.append("OUTCOME_NOT_MET")
+    if any(oc is None for oc in outcome_checks):
+        failure_codes.append("OUTCOME_UNKNOWN")
+    if not workflow_ok:
+        failure_codes.append("WORKFLOW_INCOMPLETE")
+    return {
+        "success": success,
+        "outcomes_ok": outcomes_ok,
+        "suspicious_pass": suspicious_pass,
+        "failure_codes": failure_codes,
+    }
+
+
+def _aggregate_workflow(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """从 case 级结果聚合 Workflow / Multi-intent 一级指标与 suspicious_pass 清单。"""
+    wf_cases = [r for r in results if r.get("workflow")]
+    agg: dict[str, Any] = {
+        "workflow_cases": len(wf_cases),
+        "workflow_completion_rate": None,
+        "workflow_case_pass_rate": None,
+        "multi_intent_completion_rate": None,
+        "suspicious_pass_cases": [r.get("intent", "?") for r in results
+                                  if r.get("suspicious_pass")],
+    }
+    if wf_cases:
+        total_steps = sum(r["workflow"].get("total_steps", 0) for r in wf_cases)
+        done_steps = sum(r["workflow"].get("completed_steps", 0) for r in wf_cases)
+        agg["workflow_completion_rate"] = (round(done_steps / total_steps * 100, 1)
+                                           if total_steps else None)
+        passed = sum(1 for r in wf_cases if r["workflow"].get("complete"))
+        agg["workflow_case_pass_rate"] = round(passed / len(wf_cases) * 100, 1)
+    mi_cases = [r for r in results if r.get("intent_completion")]
+    if mi_cases:
+        ti = sum(r["intent_completion"].get("total_intents", 0) for r in mi_cases)
+        ci = sum(r["intent_completion"].get("completed_intents", 0) for r in mi_cases)
+        agg["multi_intent_completion_rate"] = round(ci / ti * 100, 1) if ti else None
+    return agg
 
 
 # ---------------------------------------------------------------------------

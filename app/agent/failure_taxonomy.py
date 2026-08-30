@@ -5,7 +5,7 @@
 - 手动标注：case 定义时预置 expected_failure
 - 聚合分析：按类型/任务/版本分布
 
-错误码总表（3 大类 15 种）：
+错误码总表（4 大类 17 种）：
 """
 
 from __future__ import annotations
@@ -39,6 +39,10 @@ MEMORY_WRITE_FALSE_POSITIVE = "MEMORY_WRITE_FALSE_POSITIVE"
 MEMORY_RECALL_MISS = "MEMORY_RECALL_MISS"
 MEMORY_CONFLICT_NOT_RESOLVED = "MEMORY_CONFLICT_NOT_RESOLVED"
 
+# -- G: 评测判准（grader 侧，benchmark result 级标注） --
+OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+WORKFLOW_INCOMPLETE = "WORKFLOW_INCOMPLETE"
+
 # -- 聚合分组 --
 ALL_FAILURE_CODES: list[str] = [
     ROUTING_ERROR,
@@ -56,6 +60,8 @@ ALL_FAILURE_CODES: list[str] = [
     MEMORY_WRITE_FALSE_POSITIVE,
     MEMORY_RECALL_MISS,
     MEMORY_CONFLICT_NOT_RESOLVED,
+    OUTCOME_UNKNOWN,
+    WORKFLOW_INCOMPLETE,
 ]
 
 FAILURE_CATEGORIES: dict[str, str] = {
@@ -74,6 +80,8 @@ FAILURE_CATEGORIES: dict[str, str] = {
     MEMORY_WRITE_FALSE_POSITIVE: "记忆与数据",
     MEMORY_RECALL_MISS: "记忆与数据",
     MEMORY_CONFLICT_NOT_RESOLVED: "记忆与数据",
+    OUTCOME_UNKNOWN: "评测判准",
+    WORKFLOW_INCOMPLETE: "评测判准",
 }
 
 FAILURE_DESCRIPTIONS: dict[str, str] = {
@@ -92,6 +100,8 @@ FAILURE_DESCRIPTIONS: dict[str, str] = {
     MEMORY_WRITE_FALSE_POSITIVE: "将瞬时状态写入长期记忆",
     MEMORY_RECALL_MISS: "存在相关记忆但未能召回",
     MEMORY_CONFLICT_NOT_RESOLVED: "新旧冲突记忆未检测或未覆盖",
+    OUTCOME_UNKNOWN: "grader 判不准 outcome（判准盲区，非 agent 失败）",
+    WORKFLOW_INCOMPLETE: "expected_workflow 存在未完成/乱序步骤",
 }
 
 FAILURE_SEVERITY: dict[str, str] = {
@@ -110,6 +120,8 @@ FAILURE_SEVERITY: dict[str, str] = {
     MEMORY_WRITE_FALSE_POSITIVE: "medium",
     MEMORY_RECALL_MISS: "high",
     MEMORY_CONFLICT_NOT_RESOLVED: "medium",
+    OUTCOME_UNKNOWN: "low",
+    WORKFLOW_INCOMPLETE: "high",
 }
 
 # test case 可以预置期望的错误码

@@ -11,6 +11,16 @@
       "合并重复任务（同标题）",
       "状态改为 进行中"
     ],
+    "intents": ["新增任务", "合并重复待办", "状态更新"],
+    "expected_workflow": [
+      {"step": "新增任务 '2027 Autumn Recruitment Offer'", "intent": "新增任务",
+       "expect_tool": "update_task_status"},
+      {"step": "合并重复待办（与 '2027秋招offer' 去重）", "intent": "合并重复待办",
+       "state_assert": "合并重复任务（同标题）"},
+      {"step": "状态改为'进行中'", "intent": "状态更新",
+       "expect_tool": "update_task_status",
+       "state_assert": "状态改为 进行中"}
+    ],
     "forbidden_actions": [
       "创建重复任务不合并",
       "丢弃用户输入的 merge 意图"
@@ -35,6 +45,17 @@
       "输出格式为计划列表（含标题/优先级）",
       "计划内容涉及至少一个个人目标（来自 profile）",
       "计划内容涉及至少一个待办（来自 task_memory）"
+    ],
+    "intents": ["读取个人画像", "读取最近日记", "读取待办", "生成明日计划"],
+    "expected_workflow": [
+      {"step": "读取个人画像", "intent": "读取个人画像",
+       "state_assert": "计划内容涉及至少一个个人目标（来自 profile）"},
+      {"step": "读取最近日记", "intent": "读取最近日记", "ordered": false,
+       "expect_tool": "search_vault 或 read_folder 或 read_file"},
+      {"step": "读取待办", "intent": "读取待办",
+       "state_assert": "计划内容涉及至少一个待办（来自 task_memory）"},
+      {"step": "生成明日计划（含标题/优先级）", "intent": "生成明日计划",
+       "expect": "输出格式为计划列表（含标题/优先级）"}
     ],
     "forbidden_actions": [
       "输出计划但内容为空或与用户无关",
