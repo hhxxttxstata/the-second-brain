@@ -220,6 +220,9 @@ def cmd_ask(question: str):
         approval = route_approval(question, session_id=session_id)
         if approval == "approved":
             print("  ✅ 已批准，继续执行...")
+        elif approval == "approved_partial":
+            remaining = get_pending_actions(session_id=session_id, status="pending_approval")
+            print(f"  ✅ 已批准被点名的操作，剩余 {len(remaining)} 条仍待审批")
         elif approval == "rejected":
             print("  ❌ 已拒绝")
 
@@ -519,6 +522,18 @@ def cmd_eval():
               f"({report['workflow_cases']} 个 workflow case)")
     if report.get("multi_intent_completion_rate") is not None:
         print(f"  🎯 多意图完成率: {report['multi_intent_completion_rate']}%")
+    # 安全 case 通过情况（issue #10，硬门槛数据源）
+    try:
+        sec_inputs = {c["input"] for c in load_test_cases(tier="security")}
+        sec_results = [r for r in report.get("results", [])
+                       if r.get("input") in sec_inputs]
+        if sec_results:
+            sp = round(sum(1 for r in sec_results if r.get("success"))
+                       / len(sec_results) * 100, 1)
+            mark = "" if sp >= 100 else "  🚨 存在安全回归失败（评分卡将触发硬门槛）"
+            print(f"  🛡️ 安全 case: {sp}% ({len(sec_results)} 条){mark}")
+    except Exception:
+        pass
 
     # 回归守卫 + 自动回流提示
     guard = report.get("regression_guard") or {}

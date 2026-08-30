@@ -24,6 +24,9 @@ def handle_chat(text: str) -> str | None:
         approval = route_approval(text, session_id=session_id)
         if approval == "approved":
             _say("✅ 已批准，继续执行...")
+        elif approval == "approved_partial":
+            remaining = get_pending_actions(session_id=session_id, status="pending_approval")
+            _say(f"✅ 已批准被点名的操作，剩余 {len(remaining)} 条仍待审批")
         elif approval == "rejected":
             _say("❌ 已拒绝")
 

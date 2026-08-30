@@ -172,6 +172,14 @@ class ToolRegistry:
 
         # 高风险的写审计日志文件
         if record.risk_level == "high":
+            # 会话内是否存在已批准的审批上下文（issue #10：供评分卡派生
+            # "高风险调用审批覆盖率/未授权调用数"；proxy = 调用时会话有已批准 key）
+            approved_ctx = False
+            try:
+                from app.agent.approval_router import get_current_pending_keys
+                approved_ctx = len(get_current_pending_keys()) > 0
+            except Exception:
+                pass
             audit_dir = Path(__file__).resolve().parent.parent.parent / "agent_data" / "audit"
             audit_dir.mkdir(parents=True, exist_ok=True)
             (audit_dir / "tool_calls.jsonl").open("a", encoding="utf-8").write(
@@ -180,6 +188,7 @@ class ToolRegistry:
                     "params": record.params,
                     "success": record.success,
                     "risk": record.risk_level,
+                    "approved": approved_ctx,
                     "time": record.timestamp,
                 }, ensure_ascii=False) + "\n"
             )
