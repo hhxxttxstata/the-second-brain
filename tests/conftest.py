@@ -81,15 +81,16 @@ def fake_model() -> FakeModel:
 
 @pytest.fixture
 def mock_llm(monkeypatch, fake_model: FakeModel) -> FakeModel:
-    """把所有 graph 模块 + llm 工厂的 get_chat_model 替换为 FakeModel。"""
+    """把所有 graph 模块 + llm 工厂 + evolution.distill 的 get_chat_model 替换为 FakeModel。"""
     import app.agent.graphs.orchestrator as orch
     import app.agent.graphs.chatbot_graph as cbg
     import app.agent.graphs.plan_graph as pg
     import app.agent.graphs.reflect_graph as rg
     import app.agent.graphs.memory_graph as mg
     import app.agent.graphs.llm as llm_mod
+    import app.agent.evolution.distill as ed
 
-    for mod in (orch, cbg, pg, rg, mg):
+    for mod in (orch, cbg, pg, rg, mg, ed):
         monkeypatch.setattr(mod, "get_chat_model", lambda *a, **k: fake_model)
     monkeypatch.setattr(llm_mod, "get_chat_model", lambda *a, **k: fake_model)
     return fake_model

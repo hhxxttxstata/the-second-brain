@@ -712,6 +712,18 @@ def run_orchestrator(input_text: str,
                     step=f"✅ 执行完毕 (route={route}, tasks={task_count})",
                     latency=f"{latency}ms",
                     success=success)
+
+        # ── 自进化自动触发（节流 + 后台，不阻塞响应） ──
+        try:
+            from ..evolution.runner import maybe_auto_evolve
+            evo = maybe_auto_evolve()
+            if evo.get("triggered"):
+                logger.info("orchestrator.evolve",
+                            step="🧬 自进化已触发（后台蒸馏+策略更新）",
+                            undistilled=evo.get("undistilled"))
+        except Exception:
+            pass
+
         return {
             "success": result.get("success", False),
             "route": result.get("route", "?"),
