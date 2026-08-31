@@ -1,0 +1,32 @@
+[
+  {
+    "id": "evo-001-memory-preference",
+    "input": "记住：以后每周三晚上我要去上英语课",
+    "expected_route": "memory",
+    "note": "自进化对比评测：记忆写入类任务，策略注入后应减少多余工具调用"
+  },
+  {
+    "id": "evo-002-vault-search",
+    "input": "帮我搜一下我笔记里关于 RAG 的内容",
+    "expected_route": "chatbot",
+    "note": "知识检索类任务：策略注入后应直接命中检索工具"
+  },
+  {
+    "id": "evo-003-todo-status",
+    "input": "把待办里的'推进秋招简历准备'标记为完成",
+    "expected_route": "plan",
+    "note": "任务操作类任务"
+  },
+  {
+    "id": "evo-004-multi-intent",
+    "input": "记住我喜欢喝美式咖啡，然后帮我生成今天的计划",
+    "expected_route": "memory",
+    "note": "多意图任务：策略注入不应降低多意图完成率"
+  },
+  {
+    "id": "evo-005-tool-self-bootstrap",
+    "input": "帮我写一个工具：输入城市名返回当前天气，以后问天气直接用这个工具",
+    "expected_route": "chatbot",
+    "note": "L3 动态工具自举观测（Evaluation Lifecycle §7.3）：验证 create_tool 闭环在演化评测中可观测。阶段 B 注入的策略含'缺工具时走 create_tool 流程'，观测是否触发工具创建（trace 的 tool_calls 含 create_tool）"
+  }
+]

@@ -43,6 +43,12 @@ MEMORY_CONFLICT_NOT_RESOLVED = "MEMORY_CONFLICT_NOT_RESOLVED"
 OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
 WORKFLOW_INCOMPLETE = "WORKFLOW_INCOMPLETE"
 
+# -- E: 自进化/工作流升级（Evaluation Lifecycle 增补） --
+MISSED_SECONDARY_INTENT = "MISSED_SECONDARY_INTENT"
+PREMATURE_END = "PREMATURE_END"
+SIDE_EFFECT_MISSING = "SIDE_EFFECT_MISSING"
+EVO_MEMORY_LEAK = "EVO_MEMORY_LEAK"
+
 # -- 聚合分组 --
 ALL_FAILURE_CODES: list[str] = [
     ROUTING_ERROR,
@@ -62,6 +68,10 @@ ALL_FAILURE_CODES: list[str] = [
     MEMORY_CONFLICT_NOT_RESOLVED,
     OUTCOME_UNKNOWN,
     WORKFLOW_INCOMPLETE,
+    MISSED_SECONDARY_INTENT,
+    PREMATURE_END,
+    SIDE_EFFECT_MISSING,
+    EVO_MEMORY_LEAK,
 ]
 
 FAILURE_CATEGORIES: dict[str, str] = {
@@ -82,6 +92,10 @@ FAILURE_CATEGORIES: dict[str, str] = {
     MEMORY_CONFLICT_NOT_RESOLVED: "记忆与数据",
     OUTCOME_UNKNOWN: "评测判准",
     WORKFLOW_INCOMPLETE: "评测判准",
+    MISSED_SECONDARY_INTENT: "路由与意图",
+    PREMATURE_END: "评测判准",
+    SIDE_EFFECT_MISSING: "工具与执行",
+    EVO_MEMORY_LEAK: "自进化",
 }
 
 FAILURE_DESCRIPTIONS: dict[str, str] = {
@@ -102,6 +116,10 @@ FAILURE_DESCRIPTIONS: dict[str, str] = {
     MEMORY_CONFLICT_NOT_RESOLVED: "新旧冲突记忆未检测或未覆盖",
     OUTCOME_UNKNOWN: "grader 判不准 outcome（判准盲区，非 agent 失败）",
     WORKFLOW_INCOMPLETE: "expected_workflow 存在未完成/乱序步骤",
+    MISSED_SECONDARY_INTENT: "多意图请求只执行了主意图，漏掉次要意图",
+    PREMATURE_END: "执行提前结束：workflow 未完成但运行正常返回",
+    SIDE_EFFECT_MISSING: "声称完成但数据库状态未真正改变",
+    EVO_MEMORY_LEAK: "评测数据混入自进化学习库（隔离失效）",
 }
 
 FAILURE_SEVERITY: dict[str, str] = {
@@ -122,6 +140,10 @@ FAILURE_SEVERITY: dict[str, str] = {
     MEMORY_CONFLICT_NOT_RESOLVED: "medium",
     OUTCOME_UNKNOWN: "low",
     WORKFLOW_INCOMPLETE: "high",
+    MISSED_SECONDARY_INTENT: "high",
+    PREMATURE_END: "high",
+    SIDE_EFFECT_MISSING: "critical",
+    EVO_MEMORY_LEAK: "critical",
 }
 
 # test case 可以预置期望的错误码
@@ -276,7 +298,9 @@ def compute_failure_distribution(traces: list[dict[str, Any]]) -> dict[str, Any]
     from collections import Counter
 
     total = len(traces)
-    failed_traces = [t for t in traces if not t.get("success") or t.get("failure_codes")]
+    # 简版 trace（save_trace 格式）无 success 字段 → 默认成功，避免误报失败率
+    failed_traces = [t for t in traces
+                     if t.get("success", True) is False or t.get("failure_codes")]
     code_counts: Counter[str] = Counter()
     by_task_type: dict[str, Counter[str]] = {}
     code_trace_map: dict[str, list[dict]] = {}

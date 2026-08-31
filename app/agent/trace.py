@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -22,9 +23,113 @@ from app.core.config import settings
 
 _TRACE_DIR = settings.agent_data_dir / "traces"
 _BENCHMARK_DIR = settings.agent_data_dir / "benchmark"
+_REVIEW_QUEUE = settings.agent_data_dir / "review_queue.jsonl"
 
 # 滚动保留上限：个人使用只需最近 N 条支撑"上次为什么出错"的排查
 MAX_TRACES = 100
+
+# 效率门阈值（Promotion Gate，Evaluation Lifecycle §P0-5）
+P95_LATENCY_REGRESSION_MAX_PCT = 15
+TOKENS_REGRESSION_MAX_PCT = 20
+TIMEOUT_MS = 60_000
+
+
+@contextmanager
+def isolate_agent_data(tmp_dir: str | Path | None = None):
+    """评测隔离上下文：把 agent 的可写数据路径全部重定向到临时目录。
+
+    用于 benchmark / evolution 评测，防止：
+      1. 评测期间 LLM 真实调用产生的记忆/trace 污染生产 agent_data
+      2. 生产经验库被评测数据蒸馏（EVO_MEMORY_LEAK）
+      3. 评测"背答案"（分数虚高）
+
+    重定向范围（与 tests/conftest.isolated_data 一致并扩展）：
+      memory.db / traces / checkpoint / topic_memory / evolution /
+      handoff / tasks / session_logs / pending_ledger / code_runs / multi_turn
+
+    不重定向：benchmark 报告目录（历史对比基线必须保留）、eval 数据集、
+    vault（fixture 依赖真实知识库）、candidate 回流池（生产数据）。
+    """
+    import shutil
+    import tempfile
+
+    tmp = Path(tmp_dir) if tmp_dir else Path(tempfile.mkdtemp(prefix="dsh_eval_"))
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    from app.agent import (  # 延迟 import，避免循环
+        checkpoint as cp_mod, memory_store as ms_mod, topic_memory as tm_mod,
+    )
+    from app.agent import evolution as evo_mod
+    from app.agent.evolution import experience as exp_mod, update as upd_mod
+    from app.agent import handoff as hf_mod, session_jsonl as sj_mod
+
+    _orig: list[tuple[Any, Any, Any]] = []
+
+    def _patch(mod: Any, attr: str, new: Any) -> None:
+        _orig.append((mod, attr, getattr(mod, attr, None)))
+        setattr(mod, attr, new)
+
+    try:
+        # 核心数据
+        _patch(ms_mod, "_DB_PATH", tmp / "memory.db")
+        ms_mod._local.conn = None
+        _patch(tm_mod, "_MEMORY_DIR", tmp / "memory")
+        _patch(tm_mod, "_INDEX_FILE", tmp / "memory" / "MEMORY.md")
+        _patch(cp_mod, "_checkpoint_path", tmp / "checkpoint.db")
+        _patch(cp_mod, "_saver", None)
+        _patch(exp_mod, "_TRACES_DIR", tmp / "traces")
+        _patch(exp_mod, "_STATE_DIR", tmp / "evolution")
+        _patch(exp_mod, "_STATE_PATH", tmp / "evolution" / "state.json")
+        _patch(upd_mod, "_POLICIES_JSON", tmp / "evolution" / "policies.json")
+        _patch(upd_mod, "_POLICIES_MD", tmp / "memory" / "policies.md")
+        _patch(upd_mod, "_SKILLS_DIR", tmp / "memory" / "skills")
+        # 会话/交接/执行类
+        _patch(hf_mod, "_TASKS_DIR", tmp / "tasks")
+        _patch(hf_mod, "_HANDOFFS_DIR", tmp / "handoffs")
+        _patch(sj_mod, "_SESSION_LOG_DIR", tmp / "session_logs")
+        try:
+            from app.agent import pending_ledger as pl_mod
+            _patch(pl_mod, "_DB_PATH", tmp / "pending.db")
+            pl_mod._local.conn = None
+        except Exception:
+            pass
+        try:
+            from app.agent import code_runner as cr_mod
+            _patch(cr_mod, "CODE_RUN_DIR", tmp / "code_runs")
+        except Exception:
+            pass
+        try:
+            from app.agent import multi_turn_eval as mt_mod
+            _patch(mt_mod, "_MULTI_DIR", tmp / "multi_turn")
+        except Exception:
+            pass
+        try:
+            from app.agent import model_switch as msw_mod
+            _patch(msw_mod, "_CONFIG_PATH", tmp / "model_config.json")
+        except Exception:
+            pass
+        try:
+            # save_trace / today_state 等 JSON 层（orchestrator 子任务写 trace 的路径）
+            from app.agent import agent_data_service as ads_mod
+            _patch(ads_mod, "_DATA_DIR", tmp)
+        except Exception:
+            pass
+
+        # trace 目录指向临时（TraceSession 写入隔离区）
+        _patch(sys.modules[__name__], "_TRACE_DIR", tmp / "traces")
+        (tmp / "traces").mkdir(parents=True, exist_ok=True)
+
+        ms_mod.init_db()
+        yield tmp
+    finally:
+        for mod, attr, old in reversed(_orig):
+            try:
+                setattr(mod, attr, old)
+            except Exception:
+                pass
+        ms_mod._local.conn = None
+        if tmp_dir is None:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _ensure_dir() -> Path:
@@ -326,9 +431,16 @@ def _load_previous_benchmark() -> dict | None:
 
 
 def _regression_guard(report: dict) -> dict:
-    """回归守卫：与最近一次历史基准对比，通过率下降即告警。
+    """回归守卫：与最近一次历史基准对比（Evaluation Lifecycle §P0-5 多维）。
 
-    报告字段: {guarded, prev_pass_rate, cur_pass_rate, dropped, regressed_cases}
+    维度：
+      - pass_rate 下降 → dropped（行为回归，硬告警）
+      - p95 latency 上升 >15% → latency_regressed（效率回归）
+      - avg tokens 上升 >20% → token_regressed（成本回归）
+      - workflow_completion_rate 下降 → workflow_regressed
+
+    报告字段: {guarded, prev_pass_rate, cur_pass_rate, dropped, regressed_cases, ...}
+    旧基准报告缺效率字段时相应维度自动跳过（向前兼容）。
     """
     prev = _load_previous_benchmark()
     if prev is None:
@@ -338,13 +450,41 @@ def _regression_guard(report: dict) -> dict:
     dropped = cur_rate < prev_rate
     regressed = [r.get("intent", "?") for r in report.get("results", [])
                  if not r.get("success")]
-    return {
+
+    guard: dict = {
         "guarded": True,
         "prev_pass_rate": prev_rate,
         "cur_pass_rate": cur_rate,
         "dropped": dropped,
         "regressed_cases": regressed,
     }
+
+    # 效率门：旧报告无字段时跳过（向前兼容）
+    prev_p95, cur_p95 = prev.get("latency_p95_ms"), report.get("latency_p95_ms")
+    if prev_p95 and cur_p95 and prev_p95 > 0:
+        p95_delta = round((cur_p95 - prev_p95) / prev_p95 * 100, 1)
+        guard["p95_latency_delta_pct"] = p95_delta
+        guard["latency_regressed"] = p95_delta > P95_LATENCY_REGRESSION_MAX_PCT
+
+    prev_tok, cur_tok = prev.get("avg_tokens"), report.get("avg_tokens")
+    if prev_tok and cur_tok and prev_tok > 0:
+        tok_delta = round((cur_tok - prev_tok) / prev_tok * 100, 1)
+        guard["tokens_delta_pct"] = tok_delta
+        guard["token_regressed"] = tok_delta > TOKENS_REGRESSION_MAX_PCT
+
+    prev_wf, cur_wf = prev.get("workflow_completion_rate"), report.get("workflow_completion_rate")
+    if prev_wf is not None and cur_wf is not None:
+        guard["workflow_completion_delta"] = round(cur_wf - prev_wf, 1)
+        guard["workflow_regressed"] = cur_wf < prev_wf
+
+    # 硬门槛汇总（Promotion Gate）：任一维度回归 → gate=FAIL
+    guard["promotion_gate"] = "FAIL" if (
+        dropped
+        or guard.get("latency_regressed")
+        or guard.get("token_regressed")
+        or guard.get("workflow_regressed")
+    ) else "PASS"
+    return guard
 
 
 def _auto_capture_failures(results: list[dict], cases: list[dict]) -> int:
@@ -409,12 +549,29 @@ def _auto_capture_failures(results: list[dict], cases: list[dict]) -> int:
     return captured
 
 
-def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None,
+                        isolate: bool = True) -> dict[str, Any]:
     """运行固定测试集，输出回归评测报告。
 
     success 判定 = 路由正确 + required_outcomes 全部满足 + 未触发 forbidden_actions。
     （原实现只检查 run_orchestrator 返回值，导致约束从未被执行）
+
+    isolate=True（默认）：评测期间 agent 可写数据重定向到临时目录，
+    防止评测数据污染生产 agent_data / 被自进化蒸馏（EVO_MEMORY_LEAK）。
+    报告仍写真实 benchmark 目录（历史对比基线保留）。
     """
+
+    def _run_all() -> dict[str, Any]:
+        return _run_benchmark_inner(test_cases)
+
+    if isolate:
+        with isolate_agent_data():
+            return _run_all()
+    return _run_all()
+
+
+def _run_benchmark_inner(test_cases: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """run_benchmark_suite 的实际执行体（隔离上下文中运行）。"""
     from app.agent.graphs.orchestrator import run_orchestrator
     from app.agent.failure_taxonomy import detect_failure_codes
 
@@ -425,6 +582,9 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
     success_count = 0
     total_latency = 0
     total_tokens = 0
+    latencies: list[int] = []
+    timeout_count = 0
+    review_entries: list[dict[str, Any]] = []
 
     for case in test_cases:
         # 预置 fixture（如需）
@@ -476,6 +636,9 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
 
         # ── 聚合指标（with 已退出，stop() 已调用，latency/tokens 才是真实值）──
         total_latency += trace.latency_ms
+        latencies.append(trace.latency_ms)
+        if trace.latency_ms > TIMEOUT_MS:
+            timeout_count += 1
         # 真实 token 来自 orchestrator 内部 trace（TraceRecord.set_llm_stats 采集）
         case_tokens = trace.total_tokens or (inner.get("total_tokens", 0) if inner else 0)
         total_tokens += case_tokens
@@ -488,6 +651,35 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         workflow_result = _check_expected_workflow(case, trace_dict, state_before)
         intent_completion = _compute_intent_completion(case, workflow_result)
 
+        # ── 三态分离（Evaluation Lifecycle §P0-4）──
+        # call_success: 全部工具调用成功（无调用视为 True）
+        tool_calls = trace_dict.get("tool_calls", []) or []
+        call_success = all(bool(tc.get("success", True)) for tc in tool_calls)
+        # state_success: 所有 state_assert 步骤满足
+        state_steps = [s for s in (workflow_result or {}).get("steps", [])
+                       if s.get("kind") == "state"]
+        state_success = all(s.get("ok") is True for s in state_steps) if state_steps else True
+        state_unknown = any(s.get("ok") is None for s in state_steps)
+
+        # ── 动作级指标（Evaluation Lifecycle §P0-1）──
+        required_steps = [s for s in (workflow_result or {}).get("steps", [])
+                          if s.get("requires_tool")]
+        required_hit = sum(1 for s in required_steps if s.get("ok") is True)
+        required_action_recall = round(required_hit / len(required_steps), 3) if required_steps else None
+        # 多余动作：调用了不在任何 expect_tool 候选、不在 required_tools/allowed_tools、
+        # 不在 forbidden 的工具（ask_clarification 视为合理辅助）
+        expected_names: set[str] = set()
+        for sdef in (case.get("expected_workflow") or []):
+            et = str(sdef.get("expect_tool", "") or "")
+            expected_names.update(t.strip() for t in et.replace("／", "或").replace("/", "或")
+                                  .split("或") if t.strip())
+        expected_names.update(str(t) for t in (case.get("required_tools") or []))
+        expected_names.update(str(t) for t in (case.get("allowed_tools") or []))
+        actual_names = [tc.get("name", "") for tc in tool_calls]
+        unnecessary_calls = sum(
+            1 for n in actual_names
+            if n not in expected_names and n not in ("ask_clarification",))
+
         # 严格判定（issue #9）：unknown 不再放行；仅因 unknown 失败 → suspicious_pass
         verdict = _judge_case(bool(trace.success), outcome_checks,
                               forbidden_hits, workflow_result)
@@ -496,10 +688,22 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         if final_success:
             success_count += 1
 
-        # 失败码：trace 自身 + 约束失败映射
+        # ── 失败码：trace 自身 + 约束失败映射 + 新工作流级码 ──
         fc = list(trace.failure_codes or []) + verdict["failure_codes"]
         for fh in forbidden_hits:
             fc.append("FORBIDDEN_ACTION")
+        # MISSED_SECONDARY_INTENT：定义了 required_agents/intents 但未全覆盖
+        if (case.get("required_agents") or (case.get("intents") or []) and len(case.get("intents", [])) > 1):
+            done_agents = {str(tr.get("agent", "")) for tr in (r.get("task_results") or [])}
+            req = case.get("required_agents") or []
+            if req and any(a not in done_agents for a in req):
+                fc.append("MISSED_SECONDARY_INTENT")
+        # PREMATURE_END：run 正常返回但 workflow 未完成（半途而止）
+        if workflow_result and not workflow_result.get("complete") and bool(trace.success):
+            fc.append("PREMATURE_END")
+        # SIDE_EFFECT_MISSING：输出声称完成但 state 断言未满足
+        if state_steps and not state_success and not state_unknown:
+            fc.append("SIDE_EFFECT_MISSING")
 
         results.append({
             "intent": case["intent"],
@@ -516,28 +720,86 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
             "suspicious_pass": verdict["suspicious_pass"],
             "forbidden_hits": forbidden_hits,
             "rules_used": rules_used,
+            # 该 case 是否定义了必要动作（无定义时多余动作指标无意义）
+            "has_action_def": bool(
+                (workflow_result or {}).get("steps")
+                and any(s.get("requires_tool") for s in workflow_result["steps"]))
+                or bool(case.get("required_tools")),
             # Workflow 完备性（issue #9）：每 case 的 completed_steps / total_steps
             "workflow": workflow_result,
             "completed_steps": workflow_result["completed_steps"] if workflow_result else None,
             "total_steps": workflow_result["total_steps"] if workflow_result else None,
             "intent_completion": intent_completion,
+            # Evaluation Lifecycle §P0-4 三态
+            "call_success": call_success,
+            "state_success": state_success,
+            "user_goal_success": final_success,
+            # Evaluation Lifecycle §P0-1 动作级
+            "required_action_recall": required_action_recall,
+            "unnecessary_calls": unnecessary_calls,
+            "tool_call_count": len(tool_calls),
             # 执行细节（供 LLM judge / 人工复核使用，之前缺失导致 judge 看到空输出）
             "final_output": str(trace_dict.get("final_output", ""))[:600],
-            "tool_calls": trace_dict.get("tool_calls", []),
+            "tool_calls": tool_calls,
         })
+
+        # ── review_queue（Evaluation Lifecycle §P0-7）：判准盲区/分歧人工复核 ──
+        if verdict["suspicious_pass"] or (workflow_result and not workflow_result.get("complete")):
+            review_entries.append({
+                "case_id": case.get("id", case.get("intent", "?")),
+                "intent": case.get("intent", ""),
+                "reason": ("suspicious_pass(判准盲区)" if verdict["suspicious_pass"]
+                           else "workflow_incomplete"),
+                "rules_score": final_success,
+                "llm_score": None,
+                "trace_id": trace.trace_id,
+                "failure_codes": fc,
+                "human_label": None,
+                "timestamp": datetime.now().isoformat(),
+            })
 
         # 清理 fixture 副作用（保留 trace）
         cleanup_fixture()
 
     total = len(test_cases)
     wf_agg = _aggregate_workflow(results)
+
+    # ── review_queue 落盘（追加，保留历史待复核） ──
+    if review_entries:
+        try:
+            _REVIEW_QUEUE.parent.mkdir(parents=True, exist_ok=True)
+            with open(str(_REVIEW_QUEUE), "a", encoding="utf-8") as fq:
+                for entry in review_entries:
+                    fq.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
     _BENCHMARK_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── 效率分布（Evaluation Lifecycle §P0-5）──
+    sorted_lat = sorted(latencies)
+    def _pct(p: float) -> int:
+        if not sorted_lat:
+            return 0
+        idx = min(len(sorted_lat) - 1, int(len(sorted_lat) * p))
+        return sorted_lat[idx]
+
+    recall_vals = [r.get("required_action_recall") for r in results
+                   if r.get("required_action_recall") is not None]
+    # 动作级指标只在"定义了必要动作"的 case 集上计算（无基准的多余动作率无意义）
+    action_defined = [r for r in results if r.get("has_action_def")]
+    defined_calls = sum(r.get("tool_call_count", 0) for r in action_defined)
+    defined_unnecessary = sum(r.get("unnecessary_calls", 0) for r in action_defined)
     report = {
         "timestamp": datetime.now().isoformat(),
         "total_cases": total,
         "pass_rate": round(success_count / total * 100, 1) if total else 0,
         "avg_latency_ms": round(total_latency / total) if total else 0,
         "avg_tokens": round(total_tokens / total) if total else 0,
+        # Evaluation Lifecycle §P0-5：效率分布
+        "latency_p50_ms": _pct(0.50),
+        "latency_p95_ms": _pct(0.95),
+        "timeout_count": timeout_count,
         "unknown_outcome_count": sum(r.get("unknown_outcomes", 0) for r in results),
         "unknown_cases": sum(1 for r in results if r.get("unknown_outcomes", 0)),
         # suspicious_pass：旧 grader 会静默放行的 case（判准盲区，issue #9）
@@ -547,8 +809,21 @@ def run_benchmark_suite(test_cases: list[dict[str, Any]] | None = None) -> dict[
         "workflow_completion_rate": wf_agg["workflow_completion_rate"],
         "workflow_case_pass_rate": wf_agg["workflow_case_pass_rate"],
         "multi_intent_completion_rate": wf_agg["multi_intent_completion_rate"],
+        # Evaluation Lifecycle §P0-1：动作级指标（仅统计定义了必要动作的 case）
+        "required_action_recall_avg": (round(sum(recall_vals) / len(recall_vals), 3)
+                                       if recall_vals else None),
+        "unnecessary_action_rate": (round(defined_unnecessary / defined_calls, 3)
+                                    if defined_calls else None),
+        "premature_stop_rate": (round(
+            sum(1 for r in results if "PREMATURE_END" in (r.get("failure_codes") or []))
+            / total * 100, 1) if total else 0),
+        # 三态一致性：声称完成但状态未变（FALSE_COMPLETION 特征）
+        "side_effect_missing_count": sum(
+            1 for r in results if "SIDE_EFFECT_MISSING" in (r.get("failure_codes") or [])),
+        "review_queue_entries": len(review_entries),
         # 本次评测命中了哪些人工补规则（可观测：规则是否真的被用到）
         "human_rules_applied": sorted({rid for r in results for rid in (r.get("rules_used") or [])}),
+        "isolated": True,
         "results": results,
     }
 
@@ -657,14 +932,41 @@ def _snapshot_episodic_count() -> int:
 
 def _snapshot_state() -> dict[str, Any]:
     """case 运行前的环境状态快照（workflow state_assert 增量比对的基线）。"""
-    return {
+    snap = {
         "todos": _snapshot_todos(),
         "episodic_count": _snapshot_episodic_count(),
     }
+    # Evaluation Lifecycle §P0-3：扩展维度（conflict invalidation / profile / task history）
+    try:
+        from .memory_store import _get_conn
+        conn = _get_conn()
+        row = conn.execute("SELECT COUNT(*) AS n FROM memories WHERE deprecated=1").fetchone()
+        snap["deprecated_count"] = int(row["n"]) if row else 0
+    except Exception:
+        snap["deprecated_count"] = 0
+    try:
+        from .memory_store import get_profile, get_plan_history
+        snap["profile_text"] = json.dumps(get_profile(), ensure_ascii=False, sort_keys=True)
+        snap["task_history_count"] = len(get_plan_history(limit=200))
+    except Exception:
+        snap["profile_text"] = ""
+        snap["task_history_count"] = 0
+    try:
+        from .handoff import _read_jsonl
+        snap["handoff_active_count"] = len(_read_jsonl("active_tasks"))
+    except Exception:
+        snap["handoff_active_count"] = 0
+    return snap
 
 
 def _check_state_delta(a: str, before: dict[str, Any]) -> tuple[bool | None, str]:
     """快照增量类 state_assert："todo 出现（新增 N 条）" / "episodic 新增 N 条" / "…status=x"。
+
+    Evaluation Lifecycle §P0-3 新增语法:
+      "memory.deprecated_new >= 1"    — 旧冲突记忆被标记 deprecated（invalidation 真发生）
+      "profile changed"               — stable_profile 内容发生变更
+      "task.history_new >= 1"         — 计划历史新增 N 条
+      "handoff.active_new >= 1"       — 活动 handoff 新增 N 条
 
     与运行前快照对比判定"新增"，是工具证据之外的第二类完备性证据。
     返回 (ok, reason)；非增量语法返回 None（调用方回退到 outcome 判定器）。
@@ -674,6 +976,49 @@ def _check_state_delta(a: str, before: dict[str, Any]) -> tuple[bool | None, str
     m_cnt = _re.search(r"新增\s*(\d+)\s*条", a)
     need = int(m_cnt.group(1)) if m_cnt else 1
     m_status = _re.search(r"status\s*=\s*([A-Za-z\u4e00-\u9fff_]+)", a)
+
+    # ── 扩展语法 1: memory.deprecated_new —— conflict invalidation 真的发生 ──
+    if "memory.deprecated_new" in a_low:
+        try:
+            from .memory_store import _get_conn
+            conn = _get_conn()
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM memories WHERE deprecated=1").fetchone()
+            cur = int(row["n"]) if row else 0
+        except Exception:
+            return None, "memory 快照不可用"
+        delta = cur - int(before.get("deprecated_count") or 0)
+        return (delta >= need), f"deprecated 记忆新增 {delta} 条 (期望 ≥{need})"
+
+    # ── 扩展语法 2: profile changed —— 画像真实变更 ──
+    if "profile changed" in a_low or "memory_type=profile changed" in a_low:
+        try:
+            from .memory_store import get_profile
+            cur = json.dumps(get_profile(), ensure_ascii=False, sort_keys=True)
+        except Exception:
+            return None, "profile 快照不可用"
+        changed = cur != before.get("profile_text", "")
+        return changed, ("profile 已变更" if changed else "profile 未变更")
+
+    # ── 扩展语法 3: task.history_new —— 计划历史新增 ──
+    if "task.history_new" in a_low:
+        try:
+            from .memory_store import get_plan_history
+            cur = len(get_plan_history(limit=200))
+        except Exception:
+            return None, "task history 快照不可用"
+        delta = cur - int(before.get("task_history_count") or 0)
+        return (delta >= need), f"计划历史新增 {delta} 条 (期望 ≥{need})"
+
+    # ── 扩展语法 4: handoff.active_new —— 活动 handoff 新增 ──
+    if "handoff.active_new" in a_low:
+        try:
+            from .handoff import _read_jsonl
+            cur = len(_read_jsonl("active_tasks"))
+        except Exception:
+            return None, "handoff 快照不可用"
+        delta = cur - int(before.get("handoff_active_count") or 0)
+        return (delta >= need), f"活动 handoff 新增 {delta} 条 (期望 ≥{need})"
 
     if "todo" in a_low or "待办" in a:
         cur = _snapshot_todos()
@@ -713,11 +1058,22 @@ def _check_expected_workflow(case: dict[str, Any], trace: dict[str, Any],
        "intent": 所属子意图,        # 可选：多意图 case 拆分半失败用
        "ordered": False}            # 可选：默认 True（工具必须在上一个 ordered 步骤之后）
 
+    case 顶层可选（Evaluation Lifecycle §P1-1 trajectory_mode）:
+      "trajectory_mode": "unordered_required"  # 配合 required_tools：全部出现且成功、顺序不限
+      "trajectory_mode": "scope"               # 配合 allowed_tools：白名单外调用即失败
+      缺省 = 现有 ordered 逐步模式。
+
     case 成败 = 全部 step 满足（unknown 不放行）；complete = completed_steps == total_steps。
 
     Returns: None（case 未定义 workflow）或含 total_steps/completed_steps/steps 的字典。
     """
     workflow = case.get("expected_workflow") or []
+    trajectory_mode = str(case.get("trajectory_mode", "") or "").strip()
+
+    # ── trajectory_mode 分支（unordered_required / scope） ──
+    if trajectory_mode in ("unordered_required", "scope"):
+        return _check_trajectory_mode(case, trace, trajectory_mode)
+
     if not workflow:
         return None
 
@@ -817,6 +1173,10 @@ def _check_expected_workflow(case: dict[str, Any], trace: dict[str, Any],
             "intent": sdef.get("intent", ""),
             "ok": False if failed else (None if unknown else True),
             "reasons": reasons,
+            # 动作级指标用（Evaluation Lifecycle §P0-1）
+            "kind": ("tool" if expect_tool else
+                     "state" if state_assert else "output"),
+            "requires_tool": bool(expect_tool),
         })
 
     total = len(steps_detail)
@@ -829,6 +1189,77 @@ def _check_expected_workflow(case: dict[str, Any], trace: dict[str, Any],
         "complete": completed == total,  # unknown 步骤不计入完成 → 不放行
         "order_violations": order_violations,
         "steps": steps_detail,
+        "trajectory_mode": "ordered",
+    }
+
+
+def _check_trajectory_mode(case: dict[str, Any], trace: dict[str, Any],
+                           mode: str) -> dict[str, Any]:
+    """trajectory_mode 分支判定（Evaluation Lifecycle §P1-1）。
+
+    unordered_required: required_tools 全部出现且成功、顺序不限。
+    scope: allowed_tools 白名单，白名单外调用 → 失败（防 excessive agency）。
+    """
+    tool_calls = trace.get("tool_calls", []) or []
+    tool_names = [tc.get("name", "") for tc in tool_calls]
+    success_by_name: dict[str, bool] = {}
+    for tc in tool_calls:
+        success_by_name[tc.get("name", "")] = success_by_name.get(
+            tc.get("name", ""), True) and bool(tc.get("success", True))
+
+    steps_detail: list[dict[str, Any]] = []
+    reasons_all: list[str] = []
+    violations: list[str] = []
+    total = 0
+    completed = 0
+
+    if mode == "unordered_required":
+        required = [str(t).strip() for t in (case.get("required_tools") or []) if str(t).strip()]
+        for t in required:
+            total += 1
+            ok = t in success_by_name and success_by_name[t]
+            steps_detail.append({
+                "step": f"required_tool:{t}", "intent": "",
+                "ok": ok, "requires_tool": True, "kind": "tool",
+                "reasons": [f"工具 {t} 已成功调用" if ok else f"工具 {t} 未调用或失败"],
+            })
+            if ok:
+                completed += 1
+            else:
+                reasons_all.append(f"缺少必要动作: {t}")
+        # 多余动作（不在 required 且不在 allowed）——只记录，不判失败
+        allowed = set(case.get("allowed_tools") or [])
+        extra = [t for t in tool_names
+                 if t not in required and t not in allowed and t not in ("ask_clarification",)]
+        if extra:
+            reasons_all.append(f"多余动作: {extra}")
+        violations = reasons_all
+
+    elif mode == "scope":
+        allowed = [str(t).strip() for t in (case.get("allowed_tools") or []) if str(t).strip()]
+        allowed_set = set(allowed)
+        total = 1
+        out_of_scope = [t for t in tool_names if t not in allowed_set]
+        ok = not out_of_scope
+        steps_detail.append({
+            "step": "scope", "intent": "", "ok": ok,
+            "requires_tool": True, "kind": "tool",
+            "reasons": ["全部调用在白名单内" if ok
+                        else f"越权调用白名单外工具: {out_of_scope}"],
+        })
+        if ok:
+            completed = 1
+        else:
+            violations = [f"越权调用: {out_of_scope}"]
+
+    return {
+        "total_steps": total,
+        "completed_steps": completed,
+        "unknown_steps": 0,
+        "complete": completed == total,
+        "order_violations": violations,
+        "steps": steps_detail,
+        "trajectory_mode": mode,
     }
 
 
@@ -1270,6 +1701,21 @@ def _check_case_constraints(case: dict[str, Any], trace: dict[str, Any],
         if hit:
             forbidden_hits.append(f"{f} ({reason})")
 
+    # ── required_agents 集合断言（Evaluation Lifecycle §P0-2）──
+    # 多意图请求必须覆盖全部必要子 Agent（漏掉次要意图 → MISSED_SECONDARY_INTENT）
+    required_agents = case.get("required_agents") or []
+    if required_agents:
+        done_agents = {str(tr.get("agent", "")) for tr in (result.get("task_results") or [])}
+        missing = [a for a in required_agents if a not in done_agents]
+        ok = not missing
+        outcome_checks.append(ok)
+        outcome_detail.append({
+            "outcome": f"必需 Agent 全覆盖 {required_agents}",
+            "ok": ok,
+            "reason": (f"缺失: {missing}" if missing
+                       else f"已覆盖: {sorted(done_agents)}"),
+        })
+
     # 三态汇总：None(unknown) 不计入失败，但单独统计暴露判准盲区
     unknown_outcomes = sum(1 for oc in outcome_checks if oc is None)
 
@@ -1335,7 +1781,10 @@ def _check_single_outcome(
         if has_write:
             return True, "已写入记忆"
         # 没写入但确认已存在 → 检查输出中是否说明已存在/无需重复
-        if any(k in final_output for k in ("已存在", "已有", "已经记", "无需重复", "重复", "已记录")):
+        # （memory_graph 固定输出 "📝 Agent 记忆已保存" / "📝 已记忆" 是真实写入证据）
+        if any(k in final_output for k in ("已存在", "已有", "已经记", "无需重复",
+                                           "重复", "已记录", "已保存", "记忆已",
+                                           "任务已记录")):
             return True, "输出确认目标已存在"
         # 或 task_memory 中已有该目标
         try:

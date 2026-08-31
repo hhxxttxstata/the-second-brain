@@ -55,6 +55,26 @@
   // 零容忍行为。发生任意一条 → 失败
   // 每个元素也是具体、可判定的条件
 
+  // ── 2a. 多意图 Agent 覆盖（Evaluation Lifecycle §P0-2，选填）──
+
+  "required_agents": ["chatbot", "reflect", "memory", "plan"],
+  // 本次请求必须覆盖的全部子 Agent。grader 检查 task_results 的 agent 集合 ⊇ 此集合；
+  // 缺失 → MISSED_SECONDARY_INTENT。多意图 case 推荐与 intents/expected_workflow 搭配。
+
+  // ── 2a'. Trajectory Mode（Evaluation Lifecycle §P1-1，选填）──
+
+  "trajectory_mode": "unordered_required",
+  // 轨迹判定模式（缺省 = 现有 expected_workflow ordered 逐步模式）:
+  //   "unordered_required" — 配合 required_tools：全部出现且成功、顺序不限。
+  //                          多意图场景主模式（总结→反思→记忆→规划 顺序无强约束）
+  //   "scope"               — 配合 allowed_tools：白名单外调用即失败（防 excessive agency）
+
+  "required_tools": ["search_vault", "write_memory", "update_task_status"],
+  // trajectory_mode=unordered_required 时必填：必要工具集合
+
+  "allowed_tools": ["search_vault", "read_memory", "write_memory", "ask_clarification"],
+  // trajectory_mode=scope 时必填：工具白名单
+
   // ── 2b. Workflow 定义 (多步任务 case 选填, issue #9) ──
 
   "intents": ["新增任务", "合并重复待办", "状态更新"],
@@ -81,6 +101,11 @@
   //   expect_tool  选填，"A 或 B" 分隔为任一；校验调用成功且按序
   //   state_assert 选填，终态断言。增量语法走运行前快照比对:
   //                  "todo 出现（新增 N 条）" / "episodic 新增 N 条" / "…status=pending"
+  //                  Evaluation Lifecycle §P0-3 扩展语法:
+  //                  "memory.deprecated_new >= 1"  — 旧冲突记忆被 deprecated（invalidation 真发生）
+  //                  "profile changed"             — stable_profile 真实变更
+  //                  "task.history_new >= 1"       — 计划历史新增
+  //                  "handoff.active_new >= 1"     — 活动 handoff 新增
   //                其余文本复用 required_outcomes 的判定器
   //   expect       选填，输出断言（复用 outcome 判定器）
   //   ordered      选填，默认 true：expect_tool 必须出现在上一个 ordered 步骤工具之后；
