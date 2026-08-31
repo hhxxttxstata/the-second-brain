@@ -1,0 +1,92 @@
+[
+  {
+    "id": "multi-intent-parallel-memory-reflect",
+    "intent": "多意图并行：记忆 + 反思",
+    "input": "记住我周末喜欢去爬山，然后帮我分析一下我最近的工作状态",
+    "expected_route": "memory",
+    "stage": "challenge",
+    "tags": ["multi_task", "orchestration", "memory_write", "reflection"],
+    "required_agents": ["memory", "reflect"],
+    "intents": ["保存记忆", "反思分析"],
+    "expected_workflow": [
+      {"step": "写入记忆", "intent": "保存记忆", "ordered": false,
+       "expect_tool": "write_memory 或 write_topic_memory 或 write_episodic_memory",
+       "state_assert": "episodic 新增 1 条"},
+      {"step": "反思分析", "intent": "反思分析", "ordered": false,
+       "expect_tool": "read_memory 或 read_file 或 search_memories"}
+    ],
+    "required_outcomes": [
+      "记忆已保存（爬山偏好）",
+      "反思分析有实际内容（非空分析）"
+    ],
+    "forbidden_actions": [
+      "只执行记忆保存而完全不处理反思请求"
+    ],
+    "fixture_needed": {
+      "episodic_memory": "需有近期工作相关条目"
+    },
+    "known_issue": "并行 stage 下 memory 与 reflect 应同时执行",
+    "note": "Evaluation Lifecycle §P0-8：把 test_orchestrator_multi_task 已验证的并行 stage 场景沉淀为 challenge case。required_agents 断言两个子 Agent 都被覆盖（MISSED_SECONDARY_INTENT 检测）。",
+    "created_at": "2026-08-31"
+  },
+  {
+    "id": "multi-intent-write-then-read",
+    "intent": "多意图依赖：写先读后",
+    "input": "记住我下周要去北京出差，然后帮我查一下我上次说的出差安排",
+    "expected_route": "memory",
+    "stage": "challenge",
+    "tags": ["multi_task", "orchestration", "stage_dependency"],
+    "required_agents": ["memory", "chatbot"],
+    "intents": ["保存记忆", "查询记忆"],
+    "expected_workflow": [
+      {"step": "写入出差记忆", "intent": "保存记忆",
+       "expect_tool": "write_memory 或 write_topic_memory",
+       "state_assert": "episodic 新增 1 条"},
+      {"step": "查询出差安排", "intent": "查询记忆", "ordered": false,
+       "expect_tool": "search_memories 或 search_vault 或 read_memory"}
+    ],
+    "required_outcomes": [
+      "出差记忆已保存",
+      "查询基于真实记忆内容回答"
+    ],
+    "forbidden_actions": [
+      "查询发生在写入之前（读到旧状态）"
+    ],
+    "fixture_needed": {
+      "profile": "用户塔塔"
+    },
+    "known_issue": "查询任务必须等写入完成后执行（stage 依赖）",
+    "note": "Evaluation Lifecycle §P0-8：写类任务在前、读类任务在后的 stage 依赖场景。查询步骤 ordered=false 允许读取类工具并行/乱序出现。",
+    "created_at": "2026-08-31"
+  },
+  {
+    "id": "multi-intent-conflict-update",
+    "intent": "多意图：记忆更正 + 状态断言",
+    "input": "我之前说健身时间改成早上，帮我记下来，然后看看我最近的任务完成情况",
+    "expected_route": "memory",
+    "stage": "challenge",
+    "tags": ["multi_task", "memory_conflict", "state_assert"],
+    "required_agents": ["memory", "chatbot"],
+    "intents": ["更新记忆", "查询任务"],
+    "expected_workflow": [
+      {"step": "更正健身记忆", "intent": "更新记忆",
+       "expect_tool": "write_memory 或 write_topic_memory",
+       "state_assert": "memory.deprecated_new >= 1"},
+      {"step": "查询任务", "intent": "查询任务", "ordered": false,
+       "expect_tool": "read_memory 或 update_task_status"}
+    ],
+    "required_outcomes": [
+      "健身时间偏好已更新",
+      "任务查询有结果"
+    ],
+    "forbidden_actions": [
+      "健身时间更新后旧记忆仍为有效状态（未 deprecated）"
+    ],
+    "fixture_needed": {
+      "episodic_memory": "需有'健身晚上'相关旧记忆"
+    },
+    "known_issue": "memory.deprecated_new 断言验证 conflict invalidation 真实发生（Evaluation Lifecycle §P0-3）",
+    "note": "Evaluation Lifecycle §P0-8：新扩展 state_assert 语法 memory.deprecated_new 验证旧冲突记忆真的被标记 deprecated，而非仅口头声称。",
+    "created_at": "2026-08-31"
+  }
+]

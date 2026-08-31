@@ -7,9 +7,10 @@ on:
     branches: [master, main]
 
 jobs:
-  eval:
+  # ── Fast Suite (PR)：无 LLM 的单元层 + schema 校验（Evaluation Lifecycle §P1-3）──
+  fast-suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +26,34 @@ jobs:
         run: |
           python -X utf8 -m pytest tests/ -q --tb=short
 
+      - name: 校验评测数据集 schema
+        run: |
+          python -X utf8 -c "
+          import json, glob
+          for f in glob.glob('agent_data/eval/*/*.json'):
+              data = json.load(open(f, encoding='utf-8'))
+              arr = data if isinstance(data, list) else [data]
+              for c in arr:
+                  assert 'input' in c, f'{f}: case 缺 input'
+          print('schema OK')"
+
+  # ── Full Suite (push to master)：golden + 隔离评测（真实 LLM）──
+  eval:
+    needs: fast-suite
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
       - name: 准备评测环境（最小 vault + DB）
         env:
           OBSIDIAN_VAULT: /tmp/test_vault
@@ -38,7 +67,7 @@ jobs:
           # 初始化 SQLite
           python -X utf8 -c "from app.agent.memory_store import init_db; init_db(); print('DB ready')"
 
-      - name: 跑 Golden 回归
+      - name: 跑 Golden 回归（隔离模式，防自进化污染）
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: deepseek-v4-flash

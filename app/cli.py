@@ -526,6 +526,56 @@ def cmd_eval():
     use_score = "--score" in flags
     use_rules = "--rules" in flags
 
+    # ── review_queue：列出待人工复核的判准盲区/分歧（Evaluation Lifecycle §P0-7） ──
+    if "--review" in flags:
+        from app.agent.trace import _REVIEW_QUEUE
+        print("🗂️  人工复核队列（review_queue.jsonl）")
+        if not _REVIEW_QUEUE.exists():
+            print("  （空 — 尚无待复核条目）")
+            return
+        entries = [json.loads(l) for l in
+                   _REVIEW_QUEUE.read_text(encoding="utf-8").splitlines() if l.strip()]
+        pending = [e for e in entries if not e.get("human_label")]
+        print(f"  共 {len(entries)} 条，待复核 {len(pending)} 条\n")
+        for e in pending[-20:]:
+            print(f"  · [{e.get('timestamp', '?')[:16]}] {e.get('case_id')} "
+                  f"— {e.get('reason')} (trace: {e.get('trace_id', '?')})")
+        print("\n  复核后：编辑 review_queue.jsonl 补充 human_label 字段")
+        return
+
+    # ── 自进化评测：演化前后对比（Evaluation Lifecycle §P2-2） ──
+    if "--tier" in sys.argv and "evolution" in sys.argv:
+        from app.agent.evolution.eval import load_evolution_cases, run_evolution_suite
+        cases = load_evolution_cases()
+        print(f"🧬 自进化对比评测（演化前 vs 注入策略后）: {len(cases)} 个任务\n")
+        dry_run = "--dry-run" in flags
+        report = run_evolution_suite(cases=cases, dry_run=dry_run)
+        if report.get("error"):
+            print(f"  ❌ {report['error']}")
+            print(f"     {report.get('hint', '')}")
+            return
+        if dry_run:
+            for c in report.get("cases", []):
+                print(f"  · {c['case_id']}: {c['input'][:60]}")
+            print("\n  （dry-run，未执行任何任务）")
+            return
+        a, b = report.get("phase_a", {}), report.get("phase_b", {})
+        print(f"{'='*50}")
+        print(f"📊 演化对比 ({report.get('case_count')} 任务)")
+        print(f"  阶段A(基线): 成功率 {a.get('success_rate')}% | "
+              f"latency {a.get('avg_latency_ms')}ms | tokens {a.get('total_tokens')}")
+        print(f"  阶段B(演化后): 成功率 {b.get('success_rate')}% | "
+              f"latency {b.get('avg_latency_ms')}ms | tokens {b.get('total_tokens')}")
+        if report.get("latency_delta_pct") is not None:
+            print(f"  📈 latency 变化: {report['latency_delta_pct']:+.1f}%")
+        print(f"  策略注入生效: {'✅' if report.get('policy_injected') else '❌'}")
+        gate = report.get("hard_gate", "?")
+        mark = "✅" if gate == "PASS" else "🚨"
+        print(f"  硬门槛(成功率不降): {mark} {gate}")
+        for n in report.get("notes", []):
+            print(f"     · {n}")
+        return
+
     if use_rules:
         from app.agent.grader_rules import describe_rules
         rules = describe_rules()
@@ -590,7 +640,12 @@ def cmd_eval():
         print(f"  {i}. [{route_hint}] [{s}] {c['input'][:50]}")
 
     print(f"\n🚀 开始评测...\n")
-    report = run_benchmark_suite(test_cases=cases)
+    isolate = "--no-isolate" not in flags
+    if isolate:
+        print("  🧱 隔离模式：评测数据不写入生产 agent_data（防自进化污染）\n")
+    else:
+        print("  ⚠️  --no-isolate：评测将写入生产 agent_data（仅调试用）\n")
+    report = run_benchmark_suite(test_cases=cases, isolate=isolate)
     total = report.get("total_cases", 0)
     rate = report.get("pass_rate", 0)
     avg_lat = report.get("avg_latency_ms", 0)
@@ -599,6 +654,15 @@ def cmd_eval():
     print(f"📊 评测结果 ({label})")
     print(f"  ✅ 通过率: {rate}%")
     print(f"  ⏱  平均延迟: {avg_lat}ms")
+    if report.get("latency_p50_ms") is not None:
+        print(f"  ⏱  p50/p95: {report.get('latency_p50_ms')}ms / {report.get('latency_p95_ms')}ms"
+              + (f" | ⏰ timeout: {report.get('timeout_count')}" if report.get("timeout_count") else ""))
+    if report.get("required_action_recall_avg") is not None:
+        print(f"  🎯 必要动作召回: {report.get('required_action_recall_avg')} | "
+              f"多余动作率: {report.get('unnecessary_action_rate')} | "
+              f"提前结束率: {report.get('premature_stop_rate')}%")
+    if report.get("side_effect_missing_count"):
+        print(f"  ⚠️ 声称完成但状态未变: {report.get('side_effect_missing_count')} 个 case")
     if report.get("suspicious_pass_cases"):
         print(f"  ⚠️ suspicious_pass: {len(report['suspicious_pass_cases'])} 个 case 仅因 "
               f"unknown outcome 失败（判准盲区，不再静默放行）: "
@@ -860,12 +924,15 @@ def print_help():
     ask <问题>           走 Orchestrator 自动路由
     reflect <内容>        反思分析
     memory <内容>         保存到长期记忆
-    eval [--tier golden|challenge|exploratory|candidate]  运行测试集（默认 golden regression）
+    eval [--tier golden|challenge|exploratory|candidate|evolution]  运行测试集（默认 golden regression）
+    eval --tier evolution [--dry-run]  自进化对比评测（演化前 vs 注入策略后）
+    eval --review                      列出人工复核队列（判准盲区/分歧）
     eval --score                                          多维评分卡（不跑测试）
     eval --all                                            所有层级
     eval --tier golden --llm                              带 LLM Grader
     eval --all                                             所有层级 + 失败分析
     eval --failure                                        独立失败分析报告
+    eval --no-isolate                                     评测写入生产 agent_data（调试用）
     multiturn                                           多轮任务评测（τ-bench 方法论）
     persona                                              分析用户性格并更新对话风格
     report                                               一键捕获不满意的输出到 candidate 评测集

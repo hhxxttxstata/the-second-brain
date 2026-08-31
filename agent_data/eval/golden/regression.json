@@ -68,7 +68,9 @@
       "路由到 chatbot",
       "只做口头回复不写入记忆"
     ],
-    "fixture_needed": {},
+    "fixture_needed": {
+      "task_memory": "需有1条待办 '推进秋招简历准备'（含'秋招'关键词）"
+    },
     "tags": [
       "routing",
       "memory_write"
@@ -76,7 +78,11 @@
     "id": "routing-记住我的目标是秋招拿到AI应用开",
     "created_at": "2026-07-26",
     "substage": "regression",
-    "note": "如果目标已在 profile 中，agent 确认不重复写入也算通过（reasonable alternative）"
+    "note": "如果目标已在 profile 中，agent 确认不重复写入也算通过（reasonable alternative）（2026-08-31 补 fixture：隔离评测模式下'确认已存在'路径需要预置待办）",
+    "fixture_setup": [
+      "task_memory 中新增一条 priority=high 的 '推进秋招简历准备' todo",
+      "profile.json 写入 name=塔塔 age=26"
+    ]
   },
   {
     "intent": "生成计划",
