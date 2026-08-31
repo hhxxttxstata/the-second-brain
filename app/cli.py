@@ -337,6 +337,9 @@ def cmd_evolve():
     elif d.get("success"):
         print(f"  ✅ 蒸馏完成: {d.get('batch_size')} 条 trace → "
               f"{d.get('experiences')} 条经验, {d.get('policy_suggestions')} 条策略建议")
+        if d.get("tool_requests"):
+            print(f"     🛠️  缺工具信号: {d.get('tool_requests')} 条 → "
+                  f"待审批 {d.get('pending_saved')} 条（agent_data/tools/pending/）")
         a = d.get("applied", {})
         print(f"     episodic+{a.get('episodic', 0)}, lessons+{a.get('lessons', 0)}, "
               f"decisions+{a.get('decisions', 0)}")
@@ -378,6 +381,16 @@ def _evolve_status():
         print("    （暂无，策略连续有效 3 次后自动固化）")
     for k in s["skills"]:
         print(f"    · {k['name']} ({k['path']})")
+
+    tools = s.get("dynamic_tools") or {}
+    print(f"\n  🧩 动态工具: {tools.get('count', 0)} 个")
+    for n in tools.get("names", []):
+        print(f"    · {n}")
+    pending = tools.get("pending") or []
+    if pending:
+        print(f"  ⏳ 待审批工具请求: {tools.get('pending_count')} 条（agent_data/tools/pending/）")
+        for p in pending:
+            print(f"    · {p.get('name')}: {p.get('reason', '')}")
 
 
 def cmd_reflect(content: str):

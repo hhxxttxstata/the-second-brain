@@ -44,12 +44,21 @@ Analyze patterns: repeated tasks, recurring mistakes, inefficiencies (slow paths
       "action": "exact behavioral change, one sentence, imperative",
       "benefit": "expected improvement: latency/tokens/success"
     }}
+  ],
+  "tool_requests": [
+    {{
+      "name": "snake_case_name",
+      "description": "what the missing tool should do",
+      "input_schema": {{"type": "object", "properties": {{}}, "required": []}},
+      "reason": "evidence from traces: which task was blocked and why existing tools are insufficient"
+    }}
   ]
 }}
 
 Rules:
 - experiences: at most 4. Prefer NEW insights; skip trivia.
 - policy_suggestions: at most 2, only when the traces show a clear repeated pattern with a concrete fix. Each must be a change the agent can actually follow next time.
+- tool_requests: at most 1. Only when traces clearly show a MISSING TOOL (task blocked, repeated manual workaround, or a capability no existing tool covers). Do NOT request tools for one-off tasks or information lookups. Leave the array empty otherwise.
 - Do not invent metrics. Use only what the traces show.
 """
 
@@ -99,6 +108,7 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
 
     experiences = data.get("experiences", []) or []
     suggestions = data.get("policy_suggestions", []) or []
+    tool_requests = data.get("tool_requests", []) or []
 
     applied = _apply_experiences(experiences)
     policy_result = None
@@ -109,6 +119,15 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
         except Exception as exc:
             logger.error("evolve.distill.policy_failed", error=str(exc)[:200])
             policy_result = {"success": False, "error": str(exc)}
+
+    # 缺工具信号（L3）：落成待审批预填，create_tool 落地同名工具时自动核销
+    pending_saved = 0
+    if tool_requests:
+        try:
+            from app.tool_registry.dynamic_tools import save_pending_requests
+            pending_saved = save_pending_requests(tool_requests)
+        except Exception as exc:
+            logger.error("evolve.distill.tool_request_failed", error=str(exc)[:200])
 
     # 推进蒸馏游标：推进到本批中最新的时间戳（本批已全部处理，
     # 更旧的积压 trace 下次继续处理，不会被跳过）
@@ -123,6 +142,8 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
         "batch_size": len(batch),
         "experiences": len(experiences),
         "policy_suggestions": len(suggestions),
+        "tool_requests": len(tool_requests),
+        "pending_saved": pending_saved,
         "applied": applied,
         "policy_result": policy_result,
         "cursor": new_cursor,

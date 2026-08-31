@@ -78,8 +78,16 @@ def maybe_auto_evolve() -> dict[str, Any]:
 
 def status() -> dict[str, Any]:
     """汇总状态（CLI `evolve status` 用）。"""
+    tools_summary: dict[str, Any] = {}
+    try:
+        from app.tool_registry.dynamic_tools import summary as tools_summary_fn
+        tools_summary = tools_summary_fn()
+    except Exception as exc:
+        logger.error("evolve.status.tools_failed", error=str(exc)[:200])
+        tools_summary = {"count": 0, "names": [], "pending_count": 0, "pending": []}
     return {
         "experience": exp.status_summary(),
         "policies": update.policy_summary(),
         "skills": update.list_skills(),
+        "dynamic_tools": tools_summary,
     }
