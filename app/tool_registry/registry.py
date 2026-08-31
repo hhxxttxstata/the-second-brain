@@ -68,14 +68,21 @@ class ToolRegistry:
         self._native_tools: dict[str, RegisteredTool] = {}
         self._audit_log: list[ToolCallAudit] = []
         self._started = False
+        self._version = 0  # 每次注册 +1；未来图改为缓存单例时凭它判定是否需要重建
 
     # ── Native 工具注册 ──
 
     def register_native(self, tool: RegisteredTool) -> None:
-        assert tool.source == "native" and tool.handler is not None
+        assert tool.source in ("native", "dynamic") and tool.handler is not None
         self._native_tools[tool.name] = tool
-        logger.info("tool_registered", name=tool.name, source="native",
+        self._version += 1
+        logger.info("tool_registered", name=tool.name, source=tool.source,
                      risk=tool.risk_level)
+
+    @property
+    def version(self) -> int:
+        """工具集版本号（动态工具注册后递增，供缓存/图重建联动）。"""
+        return self._version
 
     # ── 获取工具列表 ──
 

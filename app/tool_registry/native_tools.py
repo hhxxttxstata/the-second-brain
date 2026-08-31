@@ -831,3 +831,10 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
         risk_level="low", side_effects=[],
         handler=_do_search_topic,
     ))
+
+    # ── L3 动态工具: create_tool（LLM 自写工具）+ 启动加载已持久化的动态工具 ──
+
+    from app.tool_registry.dynamic_tools import load_dynamic_tools, register_create_tool
+
+    register_create_tool(registry)
+    load_dynamic_tools(registry)
