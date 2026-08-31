@@ -30,7 +30,8 @@
 - **数据**：`agent_data/eval/evolution/basic_tasks.json`（4 个任务：记忆/检索/任务操作/多意图）
 - **入口**：`python -m app.cli eval --tier evolution [--dry-run]`
 - **实测结果**（2026-08-31）：成功率 100%→100%，latency 6278ms→4616ms（**-26.5%**），硬门槛 PASS。报告落盘 `agent_data/benchmark/evolution_*.json`
-- **注意**：单次对比含 LLM 随机性；多轮取中位数后再下结论。L3 完成后把"工具缺失信号 → create_tool"纳入演化评测。
+- **L3 自举实证**（2026-08-31 第二批）：任务集加 `evo-005`（"帮我写一个天气工具"）后，阶段 A 真实触发 `create_tool`，阶段 B 直接使用创建的 `get_weather` 工具——**自写工具→即时生效闭环在评测中可观测**（report 的 `tools_phase_a/b` + `create_tool_triggered` 字段）；实测 latency -47.4%
+- **注意**：单次对比含 LLM 随机性；多轮取中位数后再下结论。L3 的端到端恶意诱导行为在 exploratory 层观测（`dynamic_tool_safety.json`），确定性安全验证靠单元层 27 例。
 
 ### 7.3 自进化评测矩阵（与三层对应）
 
@@ -39,7 +40,9 @@
 | L1 蒸馏 | 游标不跳过不重复、benchmark trace 不参与蒸馏、经验落库正确 | `tests/test_evolution.py`（6 测）✅ |
 | L2 策略 | promote/retire 阈值判定、skill 固化、注入块命中 | `tests/test_evolution.py` + `test_eval_lifecycle.py` ✅ |
 | L2 效果 | 演化前后 latency/tokens/成功率对比 | §7.2 演化 suite ✅ |
-| L3 工具 | create_tool 正确性/黑名单/即时生效（L3 实现后补） | 预留 |
+| L3 工具 | 校验拒绝/持久化/重启加载/超时/pending 闭环 | `tests/test_tool_evolution.py`（27 测，L3 提交自带）✅ |
+| L3 安全行为 | 恶意诱导下是否识别并拒绝（观测层） | `agent_data/eval/exploratory/dynamic_tool_safety.json`（2 case，不进 CI 硬门槛）✅ |
+| L3 自举闭环 | 演化评测中 create_tool 触发 + 新工具被使用 | §7.2 演化 suite：`tools_phase_a/b` + `create_tool_triggered` 字段；实测阶段 A 触发 create_tool、阶段 B 直接使用创建的 get_weather 工具 ✅ |
 | 防污染 | 隔离模式 trace 零泄漏 | §7.1 + `test_isolate_redirects_and_restores` ✅ |
 
 ---

@@ -47,7 +47,7 @@ def load_evolution_cases() -> list[dict[str, Any]]:
 
 
 def _run_case(case: dict[str, Any]) -> dict[str, Any]:
-    """跑单个演化 case，返回 latency/tokens/success。"""
+    """跑单个演化 case，返回 latency/tokens/success/工具轨迹。"""
     from ..graphs.orchestrator import run_orchestrator
     from ..trace import _TRACE_DIR
 
@@ -56,6 +56,7 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
     latency_ms = int((time.monotonic() - start) * 1000)
     # token：读 orchestrator 内部 trace（隔离模式下 _TRACE_DIR 指向临时目录）
     tokens = 0
+    tool_names: list[str] = []
     try:
         t = r.get("trace_id", "")
         if t:
@@ -63,6 +64,7 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
             if p.exists():
                 inner = json.loads(p.read_text(encoding="utf-8"))
                 tokens = int(inner.get("total_tokens") or 0)
+                tool_names = [str(tc.get("name", "")) for tc in (inner.get("tool_calls") or [])]
     except Exception:
         pass
     return {
@@ -72,6 +74,7 @@ def _run_case(case: dict[str, Any]) -> dict[str, Any]:
         "route": r.get("route", "?"),
         "latency_ms": latency_ms,
         "tokens": tokens,
+        "tools": tool_names,
     }
 
 
@@ -113,6 +116,12 @@ def run_evolution_suite(cases: list[dict[str, Any]] | None = None,
             "action": "一次对话内的多条记忆合并为一次批量写入。",
             "benefit": "减少工具调用",
         },
+        {
+            "task_type": "chatbot",
+            "trigger": "用户要求新工具/写工具",
+            "action": "按 create_tool 规范：先与用户确认意图，再调用 create_tool 创建并验证。",
+            "benefit": "L3 自举：缺工具时自写工具",
+        },
     ]
 
     report: dict[str, Any] = {
@@ -144,6 +153,13 @@ def run_evolution_suite(cases: list[dict[str, Any]] | None = None,
     report["phase_b"] = agg_b
     report["policy_injected"] = bool(block and "执行策略" in block)
 
+    # ── L3 自举观测：create_tool 是否被触发（Evaluation Lifecycle §7.3）──
+    tools_a = sorted({t for r in phase_a for t in r.get("tools", [])})
+    tools_b = sorted({t for r in phase_b for t in r.get("tools", [])})
+    report["tools_phase_a"] = tools_a
+    report["tools_phase_b"] = tools_b
+    report["create_tool_triggered"] = "create_tool" in tools_b or "create_tool" in tools_a
+
     # ── 对比判定 ──
     hard_pass = True
     notes: list[str] = []
@@ -166,6 +182,9 @@ def run_evolution_suite(cases: list[dict[str, Any]] | None = None,
         report["hard_gate"] = "PASS" if hard_pass else "FAIL"
         report["notes"] = notes
 
+    report["results_a"] = phase_a
+    report["results_b"] = phase_b
+
     # 报告落盘（真实 benchmark 目录，历史可查）
     try:
         _REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -175,6 +194,4 @@ def run_evolution_suite(cases: list[dict[str, Any]] | None = None,
     except Exception:
         pass
 
-    report["results_a"] = phase_a
-    report["results_b"] = phase_b
     return report
