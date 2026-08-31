@@ -29,13 +29,16 @@ jobs:
       - name: 校验评测数据集 schema
         run: |
           python -X utf8 -c "
-          import json, glob
-          for f in glob.glob('agent_data/eval/*/*.json'):
+          import json, glob, os
+          files = [f for f in glob.glob('agent_data/eval/*/*.json')
+                   if '/meta/' not in f.replace(os.sep, '/')]
+          assert files, '未找到任何评测数据集文件'
+          for f in files:
               data = json.load(open(f, encoding='utf-8'))
               arr = data if isinstance(data, list) else [data]
               for c in arr:
                   assert 'input' in c, f'{f}: case 缺 input'
-          print('schema OK')"
+          print(f'schema OK: {len(files)} 个数据集文件')"
 
   # ── Full Suite (push to master)：golden + 隔离评测（真实 LLM）──
   eval:
