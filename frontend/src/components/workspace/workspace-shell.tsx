@@ -64,6 +64,10 @@ export function WorkspaceShell() {
       })
       .catch(() => undefined);
     loadSummary();
+    // 反馈提交成功后刷新快照（Evaluation 抽屉立即显示新回流 candidate）
+    const onFeedback = () => loadSummary();
+    window.addEventListener("ws:feedback-submitted", onFeedback);
+    return () => window.removeEventListener("ws:feedback-submitted", onFeedback);
   }, [loadSummary]);
 
   // 后端暂时不可达（重启/网络抖动）时每 15s 重试，恢复后横幅自动消失。

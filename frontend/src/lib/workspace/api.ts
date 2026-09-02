@@ -154,6 +154,11 @@ export interface RawTool {
   risk_level?: string;
 }
 
+export interface RawFeedbackResponse {
+  feedback_id: string;
+  candidate_id: string | null;
+}
+
 export const api = {
   workspaceSummary: (timeoutMs = 30_000) =>
     fetchJson<RawSummary>("/workspace/summary", undefined, timeoutMs),
@@ -187,4 +192,16 @@ export const api = {
 
   tools: () =>
     fetchJson<{ tool_count: number; tools: RawTool[] }>("/agent/v2/tools"),
+
+  sendFeedback: (body: {
+    trace_id: string;
+    failure_type: string;
+    input?: string;
+    note?: string;
+  }) =>
+    fetchJson<RawFeedbackResponse>("/workspace/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
 };

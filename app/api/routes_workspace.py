@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
+from app import feedback as feedback_store
 from app.agent import memory_store
 from app.agent.context_pressure import measure_pressure
 from app.agent.failure_taxonomy import compute_failure_distribution
@@ -182,11 +184,84 @@ def workspace_summary() -> dict[str, Any]:
 @router.get("/runs/{trace_id}")
 def get_run(trace_id: str) -> dict[str, Any]:
     """按 trace_id 取单条完整 trace（供 Inspector 展开历史 run）。"""
-    if not _TRACE_DIR.exists():
+    trace = _load_trace_by_id(trace_id)
+    if trace is None:
         raise HTTPException(status_code=404, detail="trace not found")
+    return trace
+
+
+def _load_trace_by_id(trace_id: str) -> dict[str, Any] | None:
+    if not _TRACE_DIR.exists():
+        return None
     for f in _TRACE_DIR.glob(f"{trace_id}.json"):
         try:
             return json.loads(f.read_text(encoding="utf-8"))
         except Exception:
-            break
-    raise HTTPException(status_code=404, detail="trace not found")
+            return None
+    return None
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    failure_type: str          # useful / useless / tool_wrong / memory_wrong / ...
+    input: str = ""            # 触发该轮回答的用户原话
+    note: str = ""             # bad case 备注
+
+
+@router.post("/feedback")
+def submit_feedback(req: FeedbackRequest) -> dict[str, Any]:
+    """记录用户反馈；负面反馈（bad case）自动回流 candidate 评测集。"""
+    if req.failure_type not in feedback_store.FAILURE_TYPES:
+        raise HTTPException(status_code=400, detail=f"unknown failure_type: {req.failure_type}")
+
+    trace_data = _load_trace_by_id(req.trace_id)
+    fb = feedback_store.new_feedback(req.trace_id, req.failure_type, req.input, trace_data)
+    if req.note.strip():
+        fb["feedback_note"] = req.note.strip()[:500]
+    feedback_store.save_feedback(fb)
+
+    candidate_id: str | None = None
+    if req.failure_type != "useful":
+        candidate_id = _feedback_to_candidate(req, trace_data)
+
+    return {"feedback_id": fb["feedback_id"], "candidate_id": candidate_id}
+
+
+def _feedback_to_candidate(req: FeedbackRequest, trace_data: dict[str, Any] | None) -> str | None:
+    """bad case 回流：写入 eval/candidate/，与 benchmark 自动捕获同 schema。
+
+    幂等：同一 input 已在 candidate 池则不再重复回流（反馈本身仍保存）。
+    """
+    cand_dir = _AGENT_DATA / "eval" / "candidate"
+    cand_dir.mkdir(parents=True, exist_ok=True)
+
+    input_text = req.input.strip()
+    existing: set[str] = set()
+    for f in cand_dir.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for c in data if isinstance(data, list) else [data]:
+            if isinstance(c, dict) and c.get("input"):
+                existing.add(str(c["input"]))
+    if input_text in existing:
+        return None
+
+    now = datetime.now()
+    cand = {
+        "id": f"fb-{now.strftime('%Y%m%d%H%M%S')}",
+        "intent": (input_text[:40] or (trace_data or {}).get("user_intent", "")[:40]),
+        "input": input_text,
+        "expected_route": "",
+        "stage": "candidate",
+        "tags": ["user_feedback", req.failure_type],
+        "note": f"用户反馈回流 ({now.isoformat()[:10]})",
+        "known_issue": f"用户反馈: {req.failure_type}" + (f" — {req.note.strip()[:200]}" if req.note.strip() else ""),
+        "trace_ref": req.trace_id,
+        "created_at": now.isoformat()[:10],
+        "failure_codes": [f"USER_FEEDBACK_{req.failure_type.upper()}"],
+    }
+    path = cand_dir / f"feedback_{now.strftime('%Y%m%d_%H%M%S')}.json"
+    path.write_text(json.dumps(cand, ensure_ascii=False, indent=2), encoding="utf-8")
+    return cand["id"]

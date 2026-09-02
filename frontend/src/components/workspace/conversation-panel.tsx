@@ -78,9 +78,21 @@ export function ConversationPanel({
             hint="发一条消息，观察 Supervisor → 子 Agent → 工具 → Final 的完整执行轨迹。"
           />
         ) : (
-          messages.map((m) => (
-            <MessageItem key={m.id} message={m} run={m.runId ? runsById.get(m.runId) : undefined} />
-          ))
+          messages.map((m, i) => {
+            // 助手消息往前找最近的用户消息，作为反馈 bad case 的 input
+            const inputText =
+              m.role === "assistant"
+                ? [...messages.slice(0, i)].reverse().find((x) => x.role === "user")?.content
+                : undefined;
+            return (
+              <MessageItem
+                key={m.id}
+                message={m}
+                run={m.runId ? runsById.get(m.runId) : undefined}
+                inputText={inputText}
+              />
+            );
+          })
         )}
         <div ref={bottomRef} />
       </div>
