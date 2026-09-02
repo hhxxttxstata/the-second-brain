@@ -1,5 +1,14 @@
 # Personal Knowledge Agent — Docker 镜像
-# 仿 Dify 模式：docker-compose up 一条命令启动
+# 多阶段构建：Node 构建前端 → Python 运行时由 FastAPI 同时托管 API 与 /workspace UI
+FROM node:22-slim AS frontend-build
+
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -13,16 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制代码 + eval 评测集
+# 复制代码 + eval 评测集 + 前端产物
 COPY app/ ./app/
 COPY agent_data/eval/ ./agent_data/eval/
+COPY --from=frontend-build /web/dist/ ./frontend/dist/
 
-# 健康检查
+# 健康检查（FastAPI 托管 Workspace UI + API）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
-EXPOSE 8501
 EXPOSE 8000
 
-# 默认启动 Web 界面（引导 → Streamlit）
-CMD ["sh", "-c", "python -c 'from app.cloud_bootstrap import main; main()' && exec streamlit run app/chat_web.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"]
+# Workspace UI: http://localhost:8000/workspace/   API docs: http://localhost:8000/docs
+CMD ["python", "-X utf8", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

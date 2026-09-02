@@ -49,16 +49,51 @@ pip install -r requirements.txt      # 国内可加 -i https://pypi.tuna.tsinghu
 ### 3. 启动（三选一）
 
 ```bash
-# A. 终端对话（最简单）
+# A. Workspace 工作台（推荐 — 三栏 Agent 可视化）
+python -X utf8 -m uvicorn app.main:app --port 8000
+#   首次需构建前端：cd frontend && npm install && npm run build
+#   浏览器打开 http://localhost:8000/workspace/
+
+# B. 终端对话（最简单）
 python -X utf8 -m app.chat
 
-# B. Web 界面
-streamlit run app/chat_web.py
-
-# C. Docker 一键起 Web + API
+# C. Docker 一键起（自动构建前端 + API + Workspace UI）
 cp .env.example .env   # 填好 key 后
-docker compose up -d   # 浏览器打开 http://localhost:8501
+docker compose up -d --build   # 浏览器打开 http://localhost:8000/workspace/
 ```
+
+---
+
+## Workspace 工作台
+
+> **Personal AI Workspace — Plan · Remember · Reflect · Act · Improve**
+> 让 Agent 的任务、记忆、执行轨迹与评测演进可见、可控、可验证。
+
+这不是一个聊天框，而是把后端已有能力显性化的三栏工作台：左边是你的操作上下文（任务 / 记忆 / 评测健康），中间是对话，右边是当前这次 Agent 执行的完整轨迹。
+
+![Workspace Overview](docs/screenshots/workspace-overview.png)
+
+| 区域 | 内容 |
+|---|---|
+| 顶部 Command Bar | 系统健康徽章（Agent Healthy / Golden 通过率）/ 当前 Active Task |
+| 左栏 Context | Today 计数、Active Task（handoff）、Recent Memory、Self Evolution 指标 |
+| 中栏 Conversation | 对话 + 每轮回答下方的 **Action Strip**（Supervisor → 子 Agent → Final 执行摘要、耗时、工具数） |
+| 右栏 Current Run | **Agent Timeline**（可展开查看工具输入输出）、Tool Calls（含 risk_level）、Run Metrics（延迟/Agent 数/Token） |
+| 底部 Drawer | **Tasks**（Task Handoff）· **Memory**（三层记忆 + Memory Delta）· **Evaluation**（Eval Pulse + Evolution Loop + Candidates）· **Failures**（Failure Taxonomy 分布） |
+
+**Evaluation 页签的 Evolution Loop** 解释了"自进化"是什么——不是自动改代码，而是 eval-driven controlled evolution：
+
+```text
+Trace → Failure → Candidate → Regression → Promoted
+                              （candidate 经回归验证后才晋升进 baseline）
+```
+
+<!-- 截图清单（docs/screenshots/）：
+  1. workspace-overview.png  — 一屏同框：Conversation + Current Run + Active Task + Eval Pulse
+  2. agent-trace.png         — 多 Agent 轨迹：Supervisor → Memory/Reflect/Plan → Chat + 工具调用
+  3. memory-delta.png        — 知识演化：Memory Delta before/after + source run
+  4. evaluation-loop.png     — 评测闭环：Candidate + Failure Type + Expected vs Actual + Evolution Loop
+-->
 
 ---
 
@@ -177,7 +212,7 @@ docker compose up -d
 | 健康检查 + 自动重启 | 异常退出自动拉起 |
 | 无 vault 模式 | 不挂载笔记也能跑，后续随时挂载 |
 
-Web 界面（`app/chat_web.py`）右侧有实时状态面板：路由 / 延迟 / Token / 工具调用 / 上下文来源，每条回答可点反馈按钮（有用/没用/工具错/记忆错），反馈会回流到评测 candidate 池。
+Web 界面（三栏 Workspace 工作台）由 FastAPI 直接托管在 `/workspace/`；旧版 Streamlit 界面（`app/chat_web.py`）保留作为轻量替代。工作台右侧有实时 Agent Run 轨迹面板，底部 Drawer 可查看任务 / 记忆变化 / 评测 / 失败分布，详见上方 [Workspace 工作台](#workspace-工作台) 章节。
 
 ---
 
@@ -197,11 +232,15 @@ Obsidian 原生:  笔记 → 直接读文件 → 拼上下文 → LLM
 ## 项目结构
 
 ```
+frontend/                    # Workspace 三栏工作台（Vite + React + TS + Tailwind）
+├── src/components/workspace/   # Shell / CommandBar / Inspector / Drawer 等组件
+└── src/lib/workspace/          # 统一视图模型 types + 后端 adapters + demo-fallback
 app/
 ├── chat.py                  # 终端对话入口
-├── chat_web.py              # Streamlit Web 界面
+├── chat_web.py              # Streamlit Web 界面（旧版，保留）
 ├── cli.py                   # CLI（ask/eval/evolve/plan/...）
-├── main.py                  # FastAPI API
+├── main.py                  # FastAPI API + 托管 /workspace 静态资源
+├── api/routes_workspace.py  # /workspace/summary 只读聚合视图模型
 ├── core/config.py           # 配置（读 .env）
 ├── obsidian/vault.py        # Obsidian vault 纯文件读写
 ├── tool_registry/           # 工具注册中心（native 工具 + 动态工具）

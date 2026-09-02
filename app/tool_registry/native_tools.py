@@ -146,7 +146,7 @@ def register_all_native_tools(registry: ToolRegistry) -> None:
 
     def _search_memories(**kw: Any) -> str:
         """搜索记忆 — 按关键词模糊搜索所有记忆条目。"""
-        from .memory_store import search_memories as sql_search
+        from app.agent.memory_store import search_memories as sql_search
         query = kw.get("query", "")
         limit = int(kw.get("limit", 5))
         memory_type = kw.get("memory_type", "")
