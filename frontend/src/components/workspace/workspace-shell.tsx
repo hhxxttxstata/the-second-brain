@@ -62,6 +62,14 @@ export function WorkspaceShell() {
     loadSummary();
   }, [loadSummary]);
 
+  // 后端暂时不可达（重启/网络抖动）时每 15s 重试，恢复后横幅自动消失。
+  // 用 interval 而非 timeout：连续失败时错误文案不变，state 不触发 effect 重跑。
+  useEffect(() => {
+    if (!snapshotError) return;
+    const timer = setInterval(() => loadSummary(), 15_000);
+    return () => clearInterval(timer);
+  }, [snapshotError, loadSummary]);
+
   const openDrawer = useCallback((tab: DrawerTab) => {
     setDrawerTab(tab);
     setDrawerOpen(true);
@@ -161,8 +169,16 @@ export function WorkspaceShell() {
       <CommandBar snapshot={snapshot} onOpenDrawer={openDrawer} />
 
       {snapshotError && (
-        <p className="shrink-0 bg-warn-soft px-4 py-1 text-[11px] text-warn">
-          后端不可达（{snapshotError}）— 当前展示 demo 数据。
+        <p className="flex shrink-0 items-center gap-2 bg-warn-soft px-4 py-1 text-[11px] text-warn">
+          <span>
+            后端不可达（{snapshotError}）— 当前展示 demo 数据，恢复后自动切换。
+          </span>
+          <button
+            onClick={() => loadSummary()}
+            className="rounded border border-warn/40 px-1.5 py-0.5 text-[10px] text-warn hover:bg-warn/10"
+          >
+            立即重试
+          </button>
         </p>
       )}
 

@@ -75,12 +75,19 @@ mimetypes.add_type("application/wasm", ".wasm")
 
 
 class _DevStaticFiles(StaticFiles):
-    """dist 产物每次协商缓存（etag 304），避免改版后浏览器沿用旧响应头。"""
+    """dist 产物每次协商缓存（etag 304），避免改版后浏览器沿用旧响应头。
+    畸形路径（如含 * 的非法 Windows 路径）按 404 处理而非 500。"""
 
     def file_response(self, *args: object, **kwargs: object):
         resp = super().file_response(*args, **kwargs)
         resp.headers["Cache-Control"] = "no-cache"
         return resp
+
+    def lookup_path(self, *args: object, **kwargs: object):
+        try:
+            return super().lookup_path(*args, **kwargs)
+        except OSError:
+            return None, ""
 
 
 _FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
