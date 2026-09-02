@@ -22,7 +22,6 @@ const newId = (p: string) => `${p}_${Date.now()}_${msgSeq++}`;
 export function WorkspaceShell() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  const [riskByName, setRiskByName] = useState<Map<string, RawTool>>(new Map());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -30,6 +29,9 @@ export function WorkspaceShell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("tasks");
   const conversationRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
+  // 工具 risk 表用 ref 而非 state：loadSummary/sendMessage 依赖它但不依赖其渲染结果，
+  // 放 state 里会让 useCallback 链、mount effect 和请求形成无限循环
+  const riskRef = useRef<Map<string, RawTool>>(new Map());
 
   const currentRun = useMemo(
     () => runs.find((r) => r.id === currentRunId) ?? null,
@@ -45,7 +47,7 @@ export function WorkspaceShell() {
       // 首屏无会话内 run 时，用最近一条真实 trace 填充 Inspector
       if (raw.latest_run) {
         setRuns((prev) =>
-          prev.length > 0 ? prev : [traceToRun(raw.latest_run!, riskByName)],
+          prev.length > 0 ? prev : [traceToRun(raw.latest_run!, riskRef.current)],
         );
       }
     } catch (e) {
@@ -53,11 +55,13 @@ export function WorkspaceShell() {
       setSnapshot(demoWorkspaceSnapshot());
       setSnapshotError(e instanceof Error ? e.message : String(e));
     }
-  }, [riskByName]);
+  }, []);
 
   useEffect(() => {
     api.tools()
-      .then((t) => setRiskByName(new Map(t.tools.map((tool) => [tool.name, tool]))))
+      .then((t) => {
+        riskRef.current = new Map(t.tools.map((tool) => [tool.name, tool]));
+      })
       .catch(() => undefined);
     loadSummary();
   }, [loadSummary]);
@@ -111,7 +115,7 @@ export function WorkspaceShell() {
             /* trace 拉取失败不阻塞主流程 */
           }
         }
-        const finalRun = chatResponseToRun(resp, trace, riskByName);
+        const finalRun = chatResponseToRun(resp, trace, riskRef.current);
         setRuns((r) => r.map((x) => (x.id === run.id ? finalRun : x)));
         setCurrentRunId(finalRun.id);
         setMessages((m) =>
@@ -154,7 +158,7 @@ export function WorkspaceShell() {
         loadSummary();
       }
     },
-    [loadSummary, riskByName],
+    [loadSummary],
   );
 
   // Inspector 展示当前 run；无会话内 run 时回退最近一条历史 trace
