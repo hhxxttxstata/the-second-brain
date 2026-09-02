@@ -179,6 +179,7 @@ def decide_node(state: MemoryAgentState) -> MemoryAgentState:
 
 
 def write_node(state: MemoryAgentState) -> MemoryAgentState:
+    _t0 = time.monotonic()  # 蒸馏窗口对比依赖 trace 的 latency 指标
     privacy = bool(state.get("privacy_requested"))
     if state.get("decision") not in ("write", "update"):
         reason = state.get("decision_reason", "")
@@ -240,7 +241,8 @@ def write_node(state: MemoryAgentState) -> MemoryAgentState:
         add_episodic(content, tags=[mtype])
         state["summary"] = f"📝 已记忆"
 
-    save_trace("memory", {"decision": state["decision"], "type": mtype, "content": content[:100]})
+    save_trace("memory", {"decision": state["decision"], "type": mtype, "content": content[:100],
+                          "latency_ms": int((time.monotonic() - _t0) * 1000)})
     state["success"] = True
     # 隐私隔离：用户要求 git ignore/隐私隔离时，落实或确认 .gitignore
     if privacy:

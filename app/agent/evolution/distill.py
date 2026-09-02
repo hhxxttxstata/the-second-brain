@@ -18,56 +18,21 @@ from app.agent.graphs.llm import get_chat_model
 from app.core.logging import logger
 
 from . import experience as exp
+from . import meta
 
-DISTILL_PROMPT = """You are the reflection engine of a personal AI agent. Distill raw execution traces into durable experience.
-
-## Input: recent task executions (newest last)
-{traces}
-
-## Task
-Analyze patterns: repeated tasks, recurring mistakes, inefficiencies (slow paths, unnecessary tool calls, repeated clarification), and what worked well.
-
-## Output — JSON only:
-{{
-  "experiences": [
-    {{
-      "title": "short title",
-      "category": "lessons|decisions",
-      "content": "one or two sentences, concrete and actionable",
-      "tags": ["tag1"]
-    }}
-  ],
-  "policy_suggestions": [
-    {{
-      "task_type": "chatbot|plan|reflect|memory|daily_plan",
-      "trigger": "keyword or condition that should activate this policy",
-      "action": "exact behavioral change, one sentence, imperative",
-      "benefit": "expected improvement: latency/tokens/success"
-    }}
-  ],
-  "tool_requests": [
-    {{
-      "name": "snake_case_name",
-      "description": "what the missing tool should do",
-      "input_schema": {{"type": "object", "properties": {{}}, "required": []}},
-      "reason": "evidence from traces: which task was blocked and why existing tools are insufficient"
-    }}
-  ]
-}}
-
-Rules:
-- experiences: at most 4. Prefer NEW insights; skip trivia.
-- policy_suggestions: at most 2, only when the traces show a clear repeated pattern with a concrete fix. Each must be a change the agent can actually follow next time.
-- tool_requests: at most 1. Only when traces clearly show a MISSING TOOL (task blocked, repeated manual workaround, or a capability no existing tool covers). Do NOT request tools for one-off tasks or information lookups. Leave the array empty otherwise.
-- Do not invent metrics. Use only what the traces show.
-"""
+# 遗留兜底：meta 层不可用时的蒸馏 prompt（正式 prompt 资产在 meta.load_distill_prompt）
+DISTILL_PROMPT = meta.DISTILL_PROMPT_V1_ASSET
 
 
 def _compact_trace(t: dict[str, Any]) -> str:
     tools = ", ".join(t["tool_names"]) if t["tool_names"] else "-"
-    return (f"[{t['timestamp'][:16]}] {t['task_type']} | intent={t['intent'][:60]} | "
+    line = (f"[{t['timestamp'][:16]}] {t['task_type']} | intent={t['intent'][:60]} | "
             f"latency={t['latency_ms']}ms tokens={t['total_tokens']} "
             f"tools=({tools}) | {'ok' if t['success'] else 'FAIL: ' + t['error'][:80]}")
+    fc = t.get("failure_codes") or []
+    if fc:
+        line += f" | failure_codes={','.join(str(c) for c in fc[:4])}"
+    return line
 
 
 def _parse_llm_json(text: str) -> dict:
@@ -79,22 +44,30 @@ def _parse_llm_json(text: str) -> dict:
 
 def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     """蒸馏一批未处理的 trace。返回报告 dict。"""
+    from . import ledger
+
     traces = exp.load_traces(limit=200)
     state = exp.load_state()
     undistilled = exp.get_undistilled(traces, state)
 
-    if not force and len(undistilled) < exp.MIN_DISTILL_TRACES:
+    min_traces = int(meta.get_param("min_distill_traces", exp.MIN_DISTILL_TRACES))
+    max_input = int(meta.get_param("max_distill_input", exp.MAX_DISTILL_INPUT))
+
+    if not force and len(undistilled) < min_traces:
         return {"skipped": True,
-                "reason": f"未蒸馏 trace 仅 {len(undistilled)} 条（阈值 {exp.MIN_DISTILL_TRACES}）",
+                "reason": f"未蒸馏 trace 仅 {len(undistilled)} 条（阈值 {min_traces}）",
                 "undistilled": len(undistilled)}
 
-    batch = undistilled[:exp.MAX_DISTILL_INPUT]  # 正序：最旧的先处理，逐批消化积压
-    prompt = DISTILL_PROMPT.format(
+    batch = undistilled[:max_input]  # 正序：最旧的先处理，逐批消化积压
+    prompt_tpl, prompt_version = meta.load_distill_prompt()
+    batch_id = f"distill_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(batch)}"
+    trace_ids = [t.get("trace_id", "") for t in batch]
+    prompt = prompt_tpl.format(
         traces="\n".join(_compact_trace(t) for t in batch))
 
     if dry_run:
         return {"dry_run": True, "undistilled": len(undistilled),
-                "batch_size": len(batch),
+                "batch_size": len(batch), "prompt_version": prompt_version,
                 "prompt_preview": prompt[:500]}
 
     try:
@@ -104,18 +77,22 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
         data = _parse_llm_json(text)
     except Exception as exc:
         logger.error("evolve.distill.llm_failed", error=str(exc)[:200])
+        meta.record_distill_outcome(prompt_version, ok=False)
+        ledger.log_event("distill_run", batch_id=batch_id, version=prompt_version,
+                          ok=False, batch_size=len(batch))
         return {"success": False, "error": f"LLM 蒸馏失败: {exc}"}
 
     experiences = data.get("experiences", []) or []
     suggestions = data.get("policy_suggestions", []) or []
     tool_requests = data.get("tool_requests", []) or []
 
-    applied = _apply_experiences(experiences)
+    applied = _apply_experiences(experiences, batch_id=batch_id, trace_ids=trace_ids)
     policy_result = None
     if suggestions:
         try:
             from . import update
-            policy_result = update.apply_policy_suggestions(suggestions)
+            policy_result = update.apply_policy_suggestions(
+                suggestions, distill_batch=batch_id, source_traces=trace_ids)
         except Exception as exc:
             logger.error("evolve.distill.policy_failed", error=str(exc)[:200])
             policy_result = {"success": False, "error": str(exc)}
@@ -126,6 +103,9 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
         try:
             from app.tool_registry.dynamic_tools import save_pending_requests
             pending_saved = save_pending_requests(tool_requests)
+            for tr in tool_requests[:3]:
+                ledger.log_event("tool_requested", name=tr.get("name", ""),
+                                 batch_id=batch_id)
         except Exception as exc:
             logger.error("evolve.distill.tool_request_failed", error=str(exc)[:200])
 
@@ -136,10 +116,23 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     state["distill_count"] = int(state.get("distill_count", 0)) + 1
     exp.save_state(state)
 
+    # meta 统计（prompt 版本去留依据）+ 台账打点
+    meta.record_distill_outcome(
+        prompt_version, ok=True,
+        experiences=len(experiences), suggestions=len(suggestions),
+        tool_requests=len(tool_requests))
+    ledger.log_event(
+        "distill_run", batch_id=batch_id, version=prompt_version, ok=True,
+        batch_size=len(batch), trace_ids=trace_ids[:12],
+        experiences=len(experiences), policy_suggestions=len(suggestions),
+        tool_requests=len(tool_requests))
+
     return {
         "success": True,
         "undistilled": len(undistilled),
         "batch_size": len(batch),
+        "batch_id": batch_id,
+        "prompt_version": prompt_version,
         "experiences": len(experiences),
         "policy_suggestions": len(suggestions),
         "tool_requests": len(tool_requests),
@@ -150,10 +143,16 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
     }
 
 
-def _apply_experiences(experiences: list[dict]) -> dict[str, Any]:
-    """经验落库：episodic + lessons.md/decisions.md + MEMORY.md 索引。"""
+def _apply_experiences(experiences: list[dict], batch_id: str = "",
+                       trace_ids: list[str] | None = None) -> dict[str, Any]:
+    """经验落库：episodic + lessons.md/decisions.md + MEMORY.md 索引（带溯源行）。"""
     from ..agent_data_service import add_episodic
     from ..topic_memory import upsert_index_entry, write_topic
+
+    provenance = ""
+    if batch_id:
+        refs = ",".join(t for t in (trace_ids or [])[:3])
+        provenance = f"\n<!-- provenance: batch={batch_id}; traces={refs} -->"
 
     stats = {"episodic": 0, "lessons": 0, "decisions": 0}
     for ex in experiences:
@@ -174,7 +173,7 @@ def _apply_experiences(experiences: list[dict]) -> dict[str, Any]:
             entry = f"- {title}: {content}"
             if tags:
                 entry += f"（{'/'.join(tags)}）"
-            write_topic(category, f"## {datetime.now().isoformat()[:10]} {title}\n{content}\n",
+            write_topic(category, f"## {datetime.now().isoformat()[:10]} {title}\n{content}{provenance}\n",
                         append=True)
             upsert_index_entry(
                 "Lessons" if category == "lessons" else "Decisions",

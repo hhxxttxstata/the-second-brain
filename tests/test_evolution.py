@@ -16,7 +16,7 @@ from app.agent.evolution import distill, experience as exp, update
 
 @pytest.fixture
 def evo_env(monkeypatch, tmp_path):
-    """把 evolution 的 trace/state/policy 路径全部隔离到 tmp_path。"""
+    """把 evolution 的 trace/state/policy/meta/ledger 路径全部隔离到 tmp_path。"""
     traces_dir = tmp_path / "traces"
     traces_dir.mkdir(parents=True)
     evo_dir = tmp_path / "evolution"
@@ -30,6 +30,13 @@ def evo_env(monkeypatch, tmp_path):
     monkeypatch.setattr(update, "_POLICIES_JSON", evo_dir / "policies.json")
     monkeypatch.setattr(update, "_POLICIES_MD", mem_dir / "policies.md")
     monkeypatch.setattr(update, "_SKILLS_DIR", mem_dir / "skills")
+    # meta 层（进化参数/统计/prompt 资产）与治理台账一并隔离
+    from app.agent.evolution import ledger, meta
+    monkeypatch.setattr(meta, "_META_CONFIG", evo_dir / "meta_config.json")
+    monkeypatch.setattr(meta, "_META_STATS", evo_dir / "meta_stats.json")
+    monkeypatch.setattr(meta, "_PROMPTS_DIR", evo_dir / "prompts")
+    monkeypatch.setattr(ledger, "_LEDGER_PATH", evo_dir / "ledger.jsonl")
+    monkeypatch.setattr(ledger, "_SNAPSHOTS_DIR", evo_dir / "snapshots")
     # topic_memory 也隔离（upsert_index_entry / write_topic 写 MEMORY.md / lessons.md）
     import app.agent.topic_memory as tm
     monkeypatch.setattr(tm, "_MEMORY_DIR", mem_dir)
@@ -123,6 +130,21 @@ def test_distill_skips_benchmark_traces(evo_env, monkeypatch):
     assert r["skipped"]
 
 
+def test_compare_windows_ignores_metricless_traces(evo_env):
+    """无度量指标的旧式 trace 不进窗口对比（count 只数带指标者）。"""
+    rows = _chatbot_rows(12)
+    for r in rows[5:]:               # 7 条退化为旧式无指标 trace（无 latency/tokens/tool_calls）
+        r["latency_ms"] = 0
+        r["total_tokens"] = 0
+        r["tool_calls"] = []
+    _write_traces(evo_env["traces"], rows)
+
+    traces = exp.load_traces(100)
+    cmp = exp.compare_windows(traces, "chatbot")
+    assert cmp["verdict"] == "insufficient"   # 带指标的仅 5 条 < MIN_SAMPLES
+    assert cmp["count"] == 5
+
+
 # ---------------------------------------------------------------------------
 # L2: 策略应用 → 验证 → skill 固化 → 回滚
 # ---------------------------------------------------------------------------
@@ -152,6 +174,12 @@ def test_promote_to_skill_after_three_improvements(evo_env, monkeypatch):
         "last_seen_at": datetime.now().isoformat(),
     }]
     update._save_policies(policies)
+
+    # A/B 晋升门打桩通过（真实门行为由 test_policy_ab_gate.py 覆盖）
+    from app.agent.evolution import ab_gate
+    monkeypatch.setattr(ab_gate, "run_policy_ab",
+                        lambda p, **kw: {"pass": True, "reason": "stub",
+                                         "report_file": "stub.json"})
 
     r = update.evaluate_policies()
     assert r["promoted"] == ["pol_test"]

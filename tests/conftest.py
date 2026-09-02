@@ -89,8 +89,9 @@ def mock_llm(monkeypatch, fake_model: FakeModel) -> FakeModel:
     import app.agent.graphs.memory_graph as mg
     import app.agent.graphs.llm as llm_mod
     import app.agent.evolution.distill as ed
+    import app.agent.evolution.meta as em
 
-    for mod in (orch, cbg, pg, rg, mg, ed):
+    for mod in (orch, cbg, pg, rg, mg, ed, em):
         monkeypatch.setattr(mod, "get_chat_model", lambda *a, **k: fake_model)
     monkeypatch.setattr(llm_mod, "get_chat_model", lambda *a, **k: fake_model)
     return fake_model
@@ -98,7 +99,7 @@ def mock_llm(monkeypatch, fake_model: FakeModel) -> FakeModel:
 
 @pytest.fixture
 def isolated_data(monkeypatch, tmp_path):
-    """隔离 checkpoint + memory.db + traces 到临时目录, 并重置图缓存。"""
+    """隔离 checkpoint + memory.db + traces + evolution 到临时目录, 并重置图缓存。"""
     import app.agent.checkpoint as cp
     import app.agent.memory_store as ms
     import app.agent.trace as tr
@@ -112,6 +113,20 @@ def isolated_data(monkeypatch, tmp_path):
     monkeypatch.setattr(cp, "_saver", None)
     monkeypatch.setattr(ms, "_DB_PATH", str(tmp_path / "memory.db"))
     monkeypatch.setattr(tr, "_TRACE_DIR", tmp_path / "traces")  # 防测试污染真实 traces/
+    # evolution 全套路径：orchestrator 每次请求后会触发 maybe_auto_evolve，
+    # 若不隔离，真实 traces 的未蒸馏积压会让后台线程写真实进化状态/台账
+    from app.agent.evolution import experience as evo_exp, ledger as evo_led, meta as evo_meta, update as evo_upd
+    monkeypatch.setattr(evo_exp, "_TRACES_DIR", tmp_path / "traces")
+    monkeypatch.setattr(evo_exp, "_STATE_DIR", tmp_path / "evolution")
+    monkeypatch.setattr(evo_exp, "_STATE_PATH", tmp_path / "evolution" / "state.json")
+    monkeypatch.setattr(evo_upd, "_POLICIES_JSON", tmp_path / "evolution" / "policies.json")
+    monkeypatch.setattr(evo_upd, "_POLICIES_MD", tmp_path / "memory" / "policies.md")
+    monkeypatch.setattr(evo_upd, "_SKILLS_DIR", tmp_path / "memory" / "skills")
+    monkeypatch.setattr(evo_meta, "_META_CONFIG", tmp_path / "evolution" / "meta_config.json")
+    monkeypatch.setattr(evo_meta, "_META_STATS", tmp_path / "evolution" / "meta_stats.json")
+    monkeypatch.setattr(evo_meta, "_PROMPTS_DIR", tmp_path / "evolution" / "prompts")
+    monkeypatch.setattr(evo_led, "_LEDGER_PATH", tmp_path / "evolution" / "ledger.jsonl")
+    monkeypatch.setattr(evo_led, "_SNAPSHOTS_DIR", tmp_path / "evolution" / "snapshots")
     ms._local.conn = None  # 丢弃已缓存到真实库的线程连接
     ms.init_db()
 

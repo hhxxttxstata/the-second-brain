@@ -307,10 +307,19 @@ def cmd_status():
 
 
 def cmd_evolve():
-    """自进化：蒸馏 trace → 生成/验证策略 → 固化 skill"""
+    """自进化：蒸馏 trace → 生成/验证策略 → A/B 门 → 固化 skill"""
     args = sys.argv[2:]
     if args and args[0] == "status":
         _evolve_status()
+        return
+    if args and args[0] == "meta":
+        _evolve_meta()
+        return
+    if args and args[0] == "promote":
+        _evolve_promote(args[1:])
+        return
+    if args and args[0] == "rollback":
+        _evolve_rollback(args[1:])
         return
     dry_run = "--dry-run" in args
     force = "--force" in args
@@ -352,7 +361,15 @@ def cmd_evolve():
     u = report.get("update")
     if u and u.get("success") is not False:
         print(f"\n  📈 策略验证: 评估 {u.get('evaluated', 0)} 条, "
-              f"固化 skill {len(u.get('promoted', []))} 条, 退役 {len(u.get('retired', []))} 条")
+              f"固化 skill {len(u.get('promoted', []))} 条, 退役 {len(u.get('retired', []))} 条, "
+              f"待 A/B {len(u.get('pending', []))} 条")
+    m = report.get("meta") or {}
+    if m.get("success") and not m.get("skipped"):
+        ap = m.get("applied") or {}
+        pr = m.get("prompt") or {}
+        if ap or pr:
+            print(f"\n  🧠 meta 复审: 调参 {list(ap.keys()) or '无'}, "
+                  f"prompt {'→ ' + pr.get('version', '?') if pr.get('installed') else '未修订'}")
     if dry_run:
         print("\n  （dry-run 结束，未产生任何写入）")
 
@@ -373,8 +390,10 @@ def _evolve_status():
     if not s["policies"]:
         print("    （暂无）")
     for p in s["policies"]:
-        mark = {"active": "✅", "proposed": "⏳", "retired": "⛔"}.get(p["status"], "·")
-        print(f"    {mark} [{p['task_type']}] score={p['score']} {p['action']}")
+        mark = {"active": "✅", "proposed": "⏳", "retired": "⛔",
+                "promote_pending": "⏸️"}.get(p["status"], "·")
+        ab = f", A/B={p.get('ab') or '-'}" if p.get("ab") else ""
+        print(f"    {mark} [{p['task_type']}] score={p['score']}{ab} {p['action']}")
 
     print("\n  🛠️  Skills:")
     if not s["skills"]:
@@ -391,6 +410,153 @@ def _evolve_status():
         print(f"  ⏳ 待审批工具请求: {tools.get('pending_count')} 条（agent_data/tools/pending/）")
         for p in pending:
             print(f"    · {p.get('name')}: {p.get('reason', '')}")
+
+    roi = s.get("roi") or {}
+    if roi:
+        ab_total = int(roi.get("ab_pass", 0)) + int(roi.get("ab_fail", 0))
+        print(f"\n  📈 自进化 ROI（近 {roi.get('window_days', 30)} 天）:")
+        print(f"    固化 {roi.get('promoted', 0)} / 退役 {roi.get('retired', 0)}"
+              f"｜A/B 通过 {roi.get('ab_pass', 0)}/{ab_total or '—'}"
+              f"｜蒸馏 {roi.get('distill_runs', 0)} 批（失败 {roi.get('parse_fail', 0)}）")
+        delta = roi.get("latency_delta_avg")
+        if delta is not None:
+            print(f"    学习曲线: 演化后 latency Δ {delta:+.1f}%"
+                  f"（最近 {len(roi.get('latency_deltas', []))} 份演化报告均值）")
+        print(f"    prompt {roi.get('prompt_version', 'v1')}"
+              f"（meta revision {roi.get('meta_revision', 0)}）"
+              f"｜快照 {roi.get('snapshots', 0)} 份")
+        print("    详见: evolve meta / evolve rollback --list")
+
+
+def _evolve_meta():
+    """evolve meta — 查看元进化层：参数/蒸馏统计/prompt 版本历史。"""
+    from app.agent.evolution.meta import meta_status
+
+    m = meta_status()
+    cfg = m["config"]
+    print("🧠 元进化层（meta）\n")
+    print(f"  配置版本: revision {cfg.get('revision', 0)}"
+          f"（更新于 {str(cfg.get('updated_at', ''))[:16] or '从未'}）")
+    print(f"  蒸馏 prompt: 活跃 {cfg.get('prompt', {}).get('distill_version', 'v1')}"
+          f"（candidate: {cfg.get('prompt', {}).get('previous', '-')}）")
+
+    print("\n  📊 参数（含可调硬区间）:")
+    from app.agent.evolution.meta import BOOL_PARAMS, PARAM_BOUNDS
+    for k, v in sorted(cfg.get("params", {}).items()):
+        if k in BOOL_PARAMS:
+            print(f"    · {k} = {v}")
+        elif k in PARAM_BOUNDS:
+            lo, hi = PARAM_BOUNDS[k]
+            print(f"    · {k} = {v}（区间 {lo}-{hi}）")
+        else:
+            print(f"    · {k} = {v}")
+
+    print("\n  📈 蒸馏统计（按 prompt 版本）:")
+    stats = m.get("stats") or {}
+    if not stats:
+        print("    （暂无蒸馏数据）")
+    for ver, v in sorted(stats.items()):
+        print(f"    · {ver}: {v.get('runs', 0)} 次, parse 失败率 "
+              f"{v.get('parse_fail_rate', 0)}, 产出/次 {v.get('yield_per_run', 0)}")
+
+    print(f"\n  📁 prompt 资产: {', '.join(m.get('prompt_files') or []) or '（未 seed）'}")
+    print(f"  上次 meta 复审: {str(m.get('last_meta_review_at', ''))[:16] or '从未'}"
+          f"（蒸馏累计 {m.get('distill_count', 0)} 批）")
+    print("\n  台账: python -m app.cli evolve rollback --list 查看快照")
+
+
+def _evolve_promote(args: list[str]):
+    """evolve promote [--policy pol_xxx] — 对 pending/指定策略手动跑 A/B 晋升门。"""
+    from app.agent.evolution import update
+
+    policies = update._load_policies()
+    pid = None
+    if "--policy" in args:
+        i = args.index("--policy")
+        if i + 1 < len(args):
+            pid = args[i + 1]
+
+    if pid:
+        targets = [p for p in policies if p.get("policy_id") == pid]
+        if not targets:
+            print(f"❌ 未找到策略 {pid}")
+            return
+    else:
+        targets = [p for p in policies if p.get("status") == "promote_pending"]
+        if not targets:
+            print("（没有待晋升策略；用 --policy pol_xxx 指定）")
+            return
+
+    print(f"🚪 A/B 晋升门: {len(targets)} 条候选\n")
+    from datetime import datetime as _dt
+    for p in targets:
+        print(f"  [{p.get('task_type')}] {p.get('policy_id')} score={p.get('score', 0)}")
+        print(f"    动作: {str(p.get('action', ''))[:80]}")
+        verdict = update._run_ab_gate(p, "run")  # 写 p["ab"] + 台账
+        ab = p.get("ab") or {}
+        mark = {"pass": "✅ PASS", "fail": "❌ FAIL"}.get(verdict, "⏸️ 不可判定")
+        print(f"    → {mark}: {ab.get('notes', '')}"
+              f"（报告 {ab.get('report', '') or '无'}）")
+        if verdict == "pass":
+            if update._promote_to_skill(p):
+                print(f"    ✅ 已固化 skill: {p.get('skill_file')}")
+        elif verdict == "fail":
+            p["score"] = 0
+            p["ab_fails"] = int(p.get("ab_fails", 0)) + 1
+            if int(p["ab_fails"]) >= update.AB_FAIL_RETIRES:
+                p["status"] = "retired"
+                p["retired_at"] = _dt.now().isoformat()
+                print(f"    ⛔ 连续 {p['ab_fails']} 次失败，已退役")
+            else:
+                print("    （score 已重置；连续 2 次失败将退役）")
+        update._save_policies(policies)
+    print("\n提示: 详情见 agent_data/benchmark/policy_ab_*.json")
+
+
+def _evolve_rollback(args: list[str]):
+    """evolve rollback [--list] [--to snap_xxx] — 查看/恢复 harness 快照。"""
+    from app.agent.evolution import ledger
+
+    if "--list" in args or "--to" not in args:
+        snaps = ledger.list_snapshots()
+        print(f"🗂️  harness 快照（{len(snaps)} 份，保留最近 {ledger.MAX_SNAPSHOTS}）\n")
+        if not snaps:
+            print("    （暂无快照；每次 evolve 会自动落一份 pre 快照）")
+        for s in reversed(snaps):  # 新→旧
+            print(f"  · {s['snap_id']}（{s['label']}, {str(s['ts'])[:19]}, {s['files']} 文件）")
+        if "--to" not in args:
+            print("\n恢复: python -m app.cli evolve rollback --to <snap_id>")
+        return
+
+    i = args.index("--to")
+    if i + 1 >= len(args):
+        print("❌ 请指定快照 id（evolve rollback --list 查看）")
+        return
+    snap_id = args[i + 1]
+    print(f"⏪ 回滚 harness → {snap_id}")
+    r = ledger.restore_snapshot(snap_id)
+    if r.get("success"):
+        print(f"  ✅ 恢复 {len(r.get('restored', []))} 个文件"
+              f"（跳过 {len(r.get('skipped', []))}，"
+              f"动态工具{'已热重载' if r.get('tools_reloaded') else '将在下次启动同步'}）")
+    else:
+        print(f"  ❌ 回滚失败: {r.get('error', '')}")
+
+
+def cmd_abgate():
+    """隐藏命令：A/B 门的子进程入口（stdout 末行输出 JSON，供后台线程解析）。"""
+    import json as _json
+
+    from app.agent.evolution import update
+    from app.agent.evolution.ab_gate import run_policy_ab
+
+    pid = sys.argv[2] if len(sys.argv) > 2 else ""
+    p = next((x for x in update._load_policies() if x.get("policy_id") == pid), None)
+    if p is None:
+        print(_json.dumps({"pass": None, "reason": f"policy not found: {pid}"}))
+        return
+    r = run_policy_ab(p)
+    print(_json.dumps(r, ensure_ascii=False, default=str))
 
 
 def cmd_reflect(content: str):
@@ -936,7 +1102,12 @@ def print_help():
     multiturn                                           多轮任务评测（τ-bench 方法论）
     persona                                              分析用户性格并更新对话风格
     report                                               一键捕获不满意的输出到 candidate 评测集
-    evolve [status|--dry-run|--force]   自进化: 蒸馏 trace→策略→skill 固化
+    evolve [status|meta|promote|rollback|--dry-run|--force]  自进化闭环
+        evolve                  蒸馏 trace→策略→A/B 门→skill 固化（+meta 复审）
+        evolve status           查看进化状态
+        evolve meta             元进化层：参数/prompt 版本/蒸馏统计
+        evolve promote          手动跑 A/B 晋升门（--policy 指定）
+        evolve rollback         harness 快照查看/恢复（--list / --to <snap_id>）
     ui                   启动终端 UI
     status               系统状态
     help                 显示帮助
@@ -972,6 +1143,7 @@ def main():
         "report": cmd_report,
         "status": cmd_status,
         "evolve": cmd_evolve,
+        "_abgate": cmd_abgate,
         "help": print_help,
     }
 

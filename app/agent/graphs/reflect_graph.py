@@ -5,6 +5,7 @@ vault 只读（知识资产），agent_data 读写（记忆）。
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -94,14 +95,18 @@ def critique_node(state: ReflectState) -> ReflectState:
 
 
 def suggest_node(state: ReflectState) -> ReflectState:
+    _t0 = time.monotonic()  # 蒸馏窗口对比依赖 trace 的 latency/tokens 指标
     logger.info("reflect.suggest", step="📌 LLM 生成建议和总结...")
     model = get_chat_model(temperature=0.4)
     prompt = SUGGEST_PROMPT.format(
         subject=state.get("subject", "general"), content=state.get("content", ""),
         analysis=state.get("analysis", ""), critique=state.get("critique", ""),
     )
+    total_tokens = 0
     try:
         response = model.invoke(prompt)
+        usage = getattr(response, "usage_metadata", None) or {}
+        total_tokens = int(usage.get("total_tokens") or 0)
         text = response.content if hasattr(response, "content") else str(response)
         import re
         cleaned = text.strip()
@@ -117,7 +122,9 @@ def suggest_node(state: ReflectState) -> ReflectState:
     logger.info("reflect.suggest.done", step="✅ 反思分析完成")
 
     # 写 trace + 记忆
-    save_trace("reflect", {"subject": state.get("subject"), "summary": state.get("summary", "")[:200]})
+    save_trace("reflect", {"subject": state.get("subject"), "summary": state.get("summary", "")[:200],
+                           "latency_ms": int((time.monotonic() - _t0) * 1000),
+                           "total_tokens": total_tokens})
     add_episodic(f"反思: {state.get('subject')} — {state.get('summary', '')[:100]}", tags=["reflect"])
 
     return state

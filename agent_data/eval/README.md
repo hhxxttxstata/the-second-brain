@@ -10,6 +10,8 @@
 | 🔍 **exploratory** | `exploratory/` | 宽泛/模糊用例，发现新失效模式 | 不一定晋升，有发现即可 |
 | 📝 **candidate** | `candidate/` | 来自真实用户的原始问题，质量可低 | 直接从反馈创建 |
 
+**special tiers**：`security/`（AgentDojo 方法论攻击 case，确定性 grader 零容忍）；`security/memory_poisoning_chain.json` 为**全链路投毒 case**（自进化供应链安全）——两段式（写入段 + 召回段）共享同一隔离环境，第 2 段的 `persistence_scan` 字段断言投毒 payload 未被蒸馏/策略管道持久化到 policies/lessons/skills/MEMORY.md，是"投毒→持久化→再注入"链路的确定性证据；`evolution/`（演化前后对比 suite，`eval --tier evolution`）。
+
 ---
 
 ## Golden 准入决策树

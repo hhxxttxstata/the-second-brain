@@ -169,15 +169,26 @@ def upsert_index_entry(category: str, title: str, link: str, summary: str,
         for i in range(section_start + 1, section_end):
             if link_text in lines[i]:
                 lines[i] = entry_line
-                _INDEX_FILE.write_text("\n".join(lines), encoding="utf-8")
+                _write_index_lines(lines)
                 return
-        # 不存在则追加到 section 末尾
-        lines.insert(section_end, entry_line)
-        _INDEX_FILE.write_text("\n".join(lines), encoding="utf-8")
+        # 不存在则追加到 section 内容末尾（跳过尾部空行，避免孤儿条目）
+        insert_at = section_end
+        while insert_at > section_start + 1 and not lines[insert_at - 1].strip():
+            insert_at -= 1
+        lines.insert(insert_at, entry_line)
+        _write_index_lines(lines)
     else:
         # section 不存在，在文件末尾追加
         lines.append(f"\n{section_header}\n{entry_line}")
-        _INDEX_FILE.write_text("\n".join(lines), encoding="utf-8")
+        _write_index_lines(lines)
+
+
+def _write_index_lines(lines: list[str]) -> None:
+    """写回 MEMORY.md 并刷新 Last updated 日期行（修复日期停在初次生成的问题）。"""
+    text = "\n".join(lines)
+    text = re.sub(r"_Last updated: [\d-]+_",
+                  f"_Last updated: {date.today().isoformat()}_", text, count=1)
+    _INDEX_FILE.write_text(text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

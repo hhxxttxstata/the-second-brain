@@ -165,6 +165,7 @@ def should_replan(state: PlanState) -> Literal["commit", "replan"]:
 
 def commit_node(state: PlanState) -> dict:
     """保存计划到 agent_data（不写 vault）。"""
+    _t0 = time.monotonic()  # 蒸馏窗口对比依赖 trace 的 latency 指标
     today = state.get("plan_date", date.today().isoformat())
     items = state.get("plan_items", [])
     plan_id = f"plan_{uuid.uuid4().hex[:8]}"
@@ -207,6 +208,7 @@ def commit_node(state: PlanState) -> dict:
     save_trace("daily_plan", {
         "plan_id": plan_id, "items": items,
         "reflect_attempts": state["reflect_attempts"],
+        "latency_ms": int((time.monotonic() - _t0) * 1000),
     })
 
     # 加一条情景记忆

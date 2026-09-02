@@ -1348,6 +1348,15 @@ def _score_feedback() -> dict[str, Any]:
 # 综合评分
 # ============================================================
 
+def _score_evolution_roi() -> dict[str, Any]:
+    """L8 自进化回报：A/B 通过率 + 蒸馏健康 + 学习曲线 + 晋升健康（P5）。
+
+    实现在 evolution.roi（与 `evolve status` 摘要共用）；无数据返回 None 跳过加权。
+    """
+    from app.agent.evolution.roi import score_evolution_roi
+    return score_evolution_roi()
+
+
 WEIGHTS_V2 = {
     # Level 1 — E2E (30%)
     "score_e2e_success": 0.15,
@@ -1385,6 +1394,8 @@ WEIGHTS_V2 = {
     "score_long_context": 0.02,
     # Level 7 — 用户反馈 (10%)
     "score_feedback": 0.10,
+    # Level 8 — 自进化回报 (3%；无自进化数据时自动跳过不参与加权)
+    "score_evolution_roi": 0.03,
 }
 
 
@@ -1415,6 +1426,7 @@ LEVEL_LABELS = {
     "score_paraphrase": "L6-改写鲁棒性",
     "score_long_context": "L6-长上下文退化",
     "score_feedback": "L7-用户反馈",
+    "score_evolution_roi": "L8-自进化回报",
 }
 
 LEVEL_PARENTS = {
@@ -1444,6 +1456,7 @@ LEVEL_PARENTS = {
     "score_paraphrase": "L6 稳定性与鲁棒性 (10%)",
     "score_long_context": "L6 稳定性与鲁棒性 (10%)",
     "score_feedback": "L7 用户反馈 (10%)",
+    "score_evolution_roi": "L8 自进化回报 (3%)",
 }
 
 
@@ -1479,6 +1492,7 @@ def run_scorecard() -> dict[str, Any]:
         "score_paraphrase": _score_paraphrase,
         "score_long_context": _score_long_context,
         "score_feedback": _score_feedback,
+        "score_evolution_roi": _score_evolution_roi,
     }
 
     dims = {}

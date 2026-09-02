@@ -84,6 +84,7 @@ def _normalize(raw: dict[str, Any], mtime: float) -> dict[str, Any]:
         "intent": str(intent)[:100],
         "tool_count": len(tool_calls),
         "tool_names": [str(t.get("name", "")) for t in tool_calls][:8],
+        "failure_codes": [str(c) for c in (raw.get("failure_codes") or [])][:5],
         "has_metrics": bool(raw.get("latency_ms") or raw.get("total_tokens")
                             or raw.get("tool_calls")),
     }
@@ -162,7 +163,9 @@ def compare_windows(traces: list[dict[str, Any]], task_type: str,
         }
     样本不足或没有可度量指标时 verdict=insufficient（不参与策略评分）。
     """
-    pool = sorted([t for t in traces if t["task_type"] == task_type],
+    # 只统计带度量指标的 trace：旧式简版 trace 无 latency/tokens（全 0），
+    # 混入窗口会让信号失真（base=0 → 无信号，或 ±100% 虚假跳变）
+    pool = sorted([t for t in traces if t["task_type"] == task_type and t.get("has_metrics")],
                   key=lambda r: r["ts"], reverse=True)
     if len(pool) < MIN_SAMPLES:
         return {"task_type": task_type, "count": len(pool),

@@ -250,7 +250,7 @@ def test_pending_request_saved_and_resolved(tool_env):
 
 def test_distill_tool_requests_flow(tool_env, monkeypatch, tmp_path):
     """蒸馏端到端: FakeModel 返回 tool_requests → pending 落盘。"""
-    from app.agent.evolution import distill, experience as exp
+    from app.agent.evolution import distill, experience as exp, ledger, meta
 
     traces_dir = tmp_path / "traces"
     traces_dir.mkdir()
@@ -259,6 +259,12 @@ def test_distill_tool_requests_flow(tool_env, monkeypatch, tmp_path):
     monkeypatch.setattr(exp, "_TRACES_DIR", traces_dir)
     monkeypatch.setattr(exp, "_STATE_DIR", evo_dir)
     monkeypatch.setattr(exp, "_STATE_PATH", evo_dir / "state.json")
+    # distill_once 会写 ledger/meta_stats/seed prompt，一并隔离
+    monkeypatch.setattr(meta, "_META_CONFIG", evo_dir / "meta_config.json")
+    monkeypatch.setattr(meta, "_META_STATS", evo_dir / "meta_stats.json")
+    monkeypatch.setattr(meta, "_PROMPTS_DIR", evo_dir / "prompts")
+    monkeypatch.setattr(ledger, "_LEDGER_PATH", evo_dir / "ledger.jsonl")
+    monkeypatch.setattr(ledger, "_SNAPSHOTS_DIR", evo_dir / "snapshots")
 
     now_iso = "2026-08-31T12:00:00"
     for i in range(5):

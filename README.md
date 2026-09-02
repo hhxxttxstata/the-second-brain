@@ -195,6 +195,38 @@ curl -X POST http://localhost:8000/agent/v2/chat \
 
 ---
 
+## 自进化体系（L1/L2/L3 + Meta 元进化 + 治理）
+
+> 设计对齐 survey *Self-Improving Agents in the Era of Experience*（external path 全谱系 + conditions & limits）。
+
+```
+trace 采集 → L1 蒸馏 → L2 策略 → A/B 晋升门 → skill 固化 → 上下文注入 → 新 trace
+                    ↘ L3 缺工具信号 → pending 审批 → create_tool 写工具/校验/注册
+Meta 层：蒸馏 prompt 版本化 + 进化参数自我迭代（失败分布反馈，自动试行/自动回退）
+治理层：ledger 台账 + harness 快照 + 一键回滚
+```
+
+| 层 | 模块 | 机制 |
+|---|---|---|
+| **L1 经验** | `evolution/distill.py` | 未蒸馏 trace ≥5 触发，单批 ≤12 条喂 LLM → 经验（lessons/decisions + episodic）+ 策略建议 + 缺工具信号；蒸馏输入带 failure_codes |
+| **L2 策略** | `evolution/update.py` | 建议 → proposed 策略（带 provenance/短关键词 triggers）→ runtime 窗口对比评分 → **A/B 晋升门**（隔离环境演化前后对比，成功率不降才固化 skill）；连续 2 次 FAIL 自动退役 |
+| **L3 工具** | `tool_registry/dynamic_tools.py` | 蒸馏产 tool_requests → pending 待审批 → `create_tool`：AST 白名单审查 + smoke 测试前置 + 10s 超时守护，注册后即时生效 |
+| **Meta** | `evolution/meta.py` | 进化参数（批大小/阈值/窗口）在硬区间内自调；蒸馏 prompt 版本化资产，parse 失败率/产出量劣化自动回退版本 |
+| **治理** | `evolution/ledger.py` | append-only 台账（全部自进化动作打点）+ harness 快照（每次 evolve 前）+ `evolve rollback` 一键恢复 |
+| **ROI** | `evolution/roi.py` | 学习曲线度量（A/B 通过率/蒸馏健康/演化 latency Δ/固化退役比）→ scorecard L8 维度 + `evolve status` 摘要 |
+
+**安全边界**（防"投毒→蒸馏持久化→再注入"供应链攻击）：自进化注入块带信任边界标记（数据而非指令，不凌驾用户指令/安全规则）；`security/memory_poisoning_chain.json` 全链路投毒 case 用确定性 `persistence_scan` 断言 payload 未进入 policies/lessons/skills。
+
+```bash
+python -m app.cli evolve                # 跑一轮闭环（蒸馏→策略→A/B 门→meta 复审）
+python -m app.cli evolve status         # 状态 + ROI 摘要
+python -m app.cli evolve meta           # 元进化层：参数/prompt 版本/蒸馏统计
+python -m app.cli evolve promote        # 手动跑 A/B 晋升门（--policy 指定）
+python -m app.cli evolve rollback --list / --to <snap_id>   # harness 快照查看/恢复
+```
+
+---
+
 ## 上下文管理
 
 - **Context Builder**：分层注入（系统策略 → 画像 → 记忆索引 → 任务 → 审批 → 会话延续 → 按需检索），token 预算 3500
