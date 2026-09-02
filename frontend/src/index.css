@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+/* Dark developer-console theme — 中性低饱和，状态色仅用于 success/warning/error/running */
+@theme {
+  --color-base-950: #0a0d12;
+  --color-base-900: #0f131a;
+  --color-base-850: #131922;
+  --color-base-800: #1a212c;
+  --color-base-750: #202938;
+  --color-edge: #232c3a;
+  --color-edge-soft: #1b2330;
+  --color-ink: #d9e0ea;
+  --color-mute: #8a94a6;
+  --color-faint: #5b6676;
+  --color-accent: #4f8ff7;
+  --color-accent-soft: #4f8ff71f;
+  --color-ok: #3ecf8e;
+  --color-ok-soft: #3ecf8e1a;
+  --color-warn: #e5a23c;
+  --color-warn-soft: #e5a23c1a;
+  --color-err: #f0705a;
+  --color-err-soft: #f0705a1a;
+  --color-run: #a78bfa;
+  --color-run-soft: #a78bfa1a;
+
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-base-950);
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 细滚动条 — console 风格 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-base-750) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-base-750);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
