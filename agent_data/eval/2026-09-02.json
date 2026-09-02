@@ -1,18 +1,19 @@
 {
-  "timestamp": "2026-08-19T18:36:48.293079",
+  "timestamp": "2026-09-02T22:18:19.258181",
   "vault": {
     "status": "✅",
-    "file_count": 64,
-    "total_chars": 130090,
-    "total_tokens_est": 32522,
+    "file_count": 70,
+    "total_chars": 141742,
+    "total_tokens_est": 35435,
     "folders": {
-      "": 2,
+      "": 3,
+      "chatlogs": 1,
       "Clippings": 7,
-      "diaries": 16,
+      "diaries": 17,
       "habbits": 3,
       "notes": 3,
       "plan": 3,
-      "知识沉淀": 2,
+      "知识沉淀": 5,
       "Agent系统设计": 2,
       "RAG技术": 3,
       "项目对比": 2,
@@ -24,34 +25,35 @@
   },
   "memory": {
     "status": "✅",
-    "memory_count": 42195,
+    "memory_count": 45045,
     "detail": {
-      "conversation": 16,
-      "episodic": 390,
+      "conversation": 22,
+      "episodic": 471,
       "stable_profile": 1,
       "task": 15,
-      "task_plan": 20612,
-      "task_todos": 6,
-      "total_memories": 21040,
-      "total_messages": 108,
+      "task_plan": 21932,
+      "task_todos": 7,
+      "total_memories": 22448,
+      "total_messages": 140,
       "profile_fields": [
-        "phone"
+        "phone",
+        "称谓"
       ],
-      "profile_field_count": 1,
-      "pending_tasks": 6
+      "profile_field_count": 2,
+      "pending_tasks": 7
     }
   },
   "traces": {
     "status": "✅",
-    "trace_count": 100,
-    "today_traces": 100,
+    "trace_count": 417,
+    "today_traces": 72,
     "by_type": {
-      "benchmark": 25,
-      "reflect": 22,
-      "plan": 5,
-      "daily_plan": 17,
-      "memory": 5,
-      "chatbot": 26
+      "reflect": 68,
+      "memory": 226,
+      "daily_plan": 90,
+      "benchmark": 19,
+      "chatbot": 12,
+      "plan": 2
     }
   },
   "tools": {
@@ -77,14 +79,14 @@
       "get_fund_data",
       "get_github_trending",
       "get_ai_news",
-      "medical_rag_query",
-      "medical_pe_diagnosis",
       "generate_excel",
       "control_visio",
       "run_code",
       "read_topic_memory",
       "write_topic_memory",
-      "search_topic_memory"
+      "search_topic_memory",
+      "create_tool",
+      "get_weather"
     ],
     "layers": {
       "vault_readonly": [
@@ -100,21 +102,18 @@
         "get_fund_data",
         "get_github_trending",
         "get_ai_news"
-      ],
-      "medical": [
-        "medical_rag_query",
-        "medical_pe_diagnosis"
       ]
     }
   },
   "context_quality": {
     "status": "✅",
-    "context_chars": 2777,
-    "context_tokens_est": 694,
-    "source_count": 6,
+    "context_chars": 3100,
+    "context_tokens_est": 775,
+    "source_count": 7,
     "source_layers": [
       "agent_data/memory_index",
       "agent_data/session_carryover",
+      "agent_data/stable_profile",
       "agent_data/system_policy",
       "agent_data/task",
       "agent_data/time_anchor",
@@ -127,5 +126,5 @@
     "fail": 0
   },
   "issues": [],
-  "latency_ms": 1687
+  "latency_ms": 52916
 }

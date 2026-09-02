@@ -30,9 +30,6 @@ class Settings(BaseSettings):
     # pydantic-settings 自动映射 AGENT_DATA_DIR → 本字段（Path 类型自动转换）
     agent_data_dir: Path = Path(__file__).resolve().parent.parent.parent / "agent_data"
 
-    # 医疗 RAG 服务（Pulmonary_embolism_system）
-    medical_rag_url: str = "http://127.0.0.1:8001"
-    medical_rag_api_key: str | None = None
 
 
 settings = Settings()
