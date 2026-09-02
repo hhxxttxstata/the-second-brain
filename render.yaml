@@ -4,7 +4,7 @@ services:
     name: personal-knowledge-agent
     runtime: docker
     plan: free
-    healthCheckPath: /_stcore/health
+    healthCheckPath: /health
     envVars:
       - key: LLM_API_KEY
         sync: false          # 在 Render Dashboard 手动设置（安全）

@@ -1,8 +1,8 @@
 # Personal Knowledge Agent — Docker Compose 一键启动
 # 仿 Dify 模式：
 #   1. cp .env.example .env   （配置 LLM_API_KEY）
-#   2. docker compose up -d
-#   3. 浏览器打开 http://localhost:8501
+#   2. docker compose up -d --build
+#   3. 浏览器打开 http://localhost:8000/workspace/  （三栏 Agent 工作台）
 #
 # 数据持久化：agent_data 卷挂载，重启/升级不丢记忆与任务
 services:
@@ -10,8 +10,7 @@ services:
     build: .
     container_name: personal-knowledge-agent
     ports:
-      - "8501:8501"    # Web 对话界面 (Streamlit)
-      - "8000:8000"    # FastAPI 后端 (可选)
+      - "8000:8000"    # Workspace UI (/workspace/) + FastAPI 后端
     env_file:
       - .env
     environment:
