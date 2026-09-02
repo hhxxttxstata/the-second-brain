@@ -1,5 +1,8 @@
 // Workspace Shell — 三栏总装 + 数据加载 + chat 发送流程（交接文档 §22 无流式策略：
 // 发送即建 run placeholder → 请求返回后按 trace_id 拉全量轨迹刷新 AgentRun）
+// 会话持久化：活跃会话的 messages/runs 是权威源，每次变化写穿 localStorage
+// （session-store），刷新后由 bootstrap() 惰性恢复；历史会话仅显式归档才从
+// 主列表移除，归档可恢复。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type RawSummary, type RawTool } from "@/lib/workspace/api";
 import {
@@ -9,6 +12,17 @@ import {
   traceToRun,
 } from "@/lib/workspace/adapters";
 import { demoWorkspaceSnapshot } from "@/lib/workspace/demo-fallback";
+import {
+  conversationFromMessages,
+  createSession,
+  loadActiveSessionId,
+  loadSessions,
+  persistSessions,
+  reviveSession,
+  sessionTitleFrom,
+  upsertSession,
+  type StoredSession,
+} from "@/lib/workspace/session-store";
 import type { AgentRun, ChatMessage, MemoryDelta, WorkspaceSnapshot } from "@/lib/workspace/types";
 import { AgentRunInspector } from "./agent-run-inspector";
 import { CommandBar } from "./command-bar";
@@ -19,16 +33,62 @@ import { WorkspaceDrawer, type DrawerTab } from "./workspace-drawer";
 let msgSeq = 0;
 const newId = (p: string) => `${p}_${Date.now()}_${msgSeq++}`;
 
+/** 用实时 messages/runs 覆盖会话记录（活跃会话的内存态是权威源） */
+function withLive(
+  record: StoredSession,
+  messages: ChatMessage[],
+  runs: AgentRun[],
+): StoredSession {
+  return {
+    ...record,
+    messages,
+    runs,
+    title: messages.length > 0 ? sessionTitleFrom(messages) : record.title,
+  };
+}
+
+/** 按最后活动时间取最近的活跃（未归档）会话 */
+function latestActive(sessions: StoredSession[]): StoredSession | null {
+  const active = sessions.filter((s) => !s.archived);
+  if (active.length === 0) return null;
+  return [...active].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+}
+
+/** mount 时的会话恢复：上次活跃会话（已修复刷新打断的 run）或新建空会话。
+ *  只读 localStorage + 幂等回写，无副作用积累，StrictMode 双跑收敛。 */
+function bootstrap(): {
+  sessions: StoredSession[];
+  activeId: string;
+  messages: ChatMessage[];
+  runs: AgentRun[];
+} {
+  const list = loadSessions();
+  const target =
+    list.find((s) => s.id === loadActiveSessionId() && !s.archived) ?? latestActive(list);
+  if (target) {
+    const revived = reviveSession(target);
+    const nextList = upsertSession(list, revived);
+    persistSessions(nextList, revived.id);
+    return { sessions: nextList, activeId: revived.id, messages: revived.messages, runs: revived.runs };
+  }
+  const fresh = createSession();
+  const nextList = [fresh, ...list.filter((s) => s.id !== fresh.id)];
+  persistSessions(nextList, fresh.id);
+  return { sessions: nextList, activeId: fresh.id, messages: [], runs: [] };
+}
+
 export function WorkspaceShell() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [runs, setRuns] = useState<AgentRun[]>([]);
-  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [boot] = useState(bootstrap);
+  const [sessions, setSessions] = useState<StoredSession[]>(boot.sessions);
+  const [activeId, setActiveId] = useState<string | null>(boot.activeId);
+  const [messages, setMessages] = useState<ChatMessage[]>(boot.messages);
+  const [runs, setRuns] = useState<AgentRun[]>(boot.runs);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(boot.runs[0]?.id ?? null);
   const [sending, setSending] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("tasks");
-  const conversationRef = useRef<{ role: "user" | "assistant"; content: string }[]>([]);
   // 工具 risk 表用 ref 而非 state：loadSummary/sendMessage 依赖它但不依赖其渲染结果，
   // 放 state 里会让 useCallback 链、mount effect 和请求形成无限循环
   const riskRef = useRef<Map<string, RawTool>>(new Map());
@@ -38,6 +98,128 @@ export function WorkspaceShell() {
     [runs, currentRunId],
   );
   const runsById = useMemo(() => new Map(runs.map((r) => [r.id, r])), [runs]);
+
+  // ---- 会话管理 ----
+  // sessions state 里活跃会话的记录可能落后于实时 messages/runs；
+  // 所有读活跃记录的地方一律先 mergedSessions() 并回实时内容。
+
+  const mergedSessions = useCallback(() => {
+    const current = activeId ? sessions.find((s) => s.id === activeId) : null;
+    if (!current) return sessions;
+    return upsertSession(sessions, {
+      ...withLive(current, messages, runs),
+      updatedAt: new Date().toISOString(),
+    });
+  }, [sessions, activeId, messages, runs]);
+
+  // 活跃会话内容变化 → 写穿 localStorage（外部系统同步，不改 React state）。
+  // 空会话不落盘：避免 loadSummary 的 latest_run 兜底 run 混进会话记录。
+  useEffect(() => {
+    if (!activeId || messages.length === 0) return;
+    const current = sessions.find((s) => s.id === activeId);
+    if (!current) return;
+    persistSessions(
+      upsertSession(sessions, {
+        ...withLive(current, messages, runs),
+        updatedAt: new Date().toISOString(),
+      }),
+      activeId,
+    );
+  }, [messages, runs, activeId, sessions]);
+
+  const switchSession = useCallback(
+    (id: string) => {
+      if (id === activeId) return;
+      const list = mergedSessions();
+      const target = list.find((s) => s.id === id);
+      if (!target || target.archived) return;
+      persistSessions(list, id);
+      setActiveId(id);
+      setMessages(target.messages);
+      setRuns(target.runs);
+      setCurrentRunId(target.runs[0]?.id ?? null);
+    },
+    [mergedSessions, activeId],
+  );
+
+  const newSession = useCallback(() => {
+    const fresh = createSession();
+    const nextList = [fresh, ...mergedSessions()];
+    persistSessions(nextList, fresh.id);
+    setSessions(nextList);
+    setActiveId(fresh.id);
+    setMessages([]);
+    setRuns([]);
+    setCurrentRunId(null);
+  }, [mergedSessions]);
+
+  const archiveSession = useCallback(
+    (id: string) => {
+      let list = mergedSessions();
+      const target = list.find((s) => s.id === id);
+      if (!target || target.archived) return;
+      list = upsertSession(list, { ...target, archived: true });
+      if (id === activeId) {
+        // 归档的是当前会话：切到最近的其他活跃会话，没有则新建
+        const next = latestActive(list);
+        if (next) {
+          persistSessions(list, next.id);
+          setActiveId(next.id);
+          setMessages(next.messages);
+          setRuns(next.runs);
+          setCurrentRunId(next.runs[0]?.id ?? null);
+        } else {
+          const fresh = createSession();
+          list = [fresh, ...list];
+          persistSessions(list, fresh.id);
+          setActiveId(fresh.id);
+          setMessages([]);
+          setRuns([]);
+          setCurrentRunId(null);
+        }
+      } else {
+        persistSessions(list, activeId);
+      }
+      setSessions(list);
+    },
+    [mergedSessions, activeId],
+  );
+
+  const unarchiveSession = useCallback(
+    (id: string) => {
+      const target = sessions.find((s) => s.id === id);
+      if (!target || !target.archived) return;
+      const nextList = upsertSession(sessions, { ...target, archived: false });
+      persistSessions(nextList, activeId);
+      setSessions(nextList);
+    },
+    [sessions, activeId],
+  );
+
+  // 仅允许删除归档会话；活跃会话走归档路径（防误删）
+  const deleteSession = useCallback(
+    (id: string) => {
+      const target = sessions.find((s) => s.id === id);
+      if (!target || !target.archived) return;
+      const nextList = sessions.filter((s) => s.id !== id);
+      persistSessions(nextList, activeId);
+      setSessions(nextList);
+    },
+    [sessions, activeId],
+  );
+
+  // 展示用列表：活跃会话永远用实时内容覆盖
+  const displaySessions = useMemo(
+    () =>
+      sessions.map((s) => {
+        if (s.id !== activeId) return s;
+        const current = withLive(s, messages, runs);
+        return current;
+      }),
+    [sessions, activeId, messages, runs],
+  );
+
+  // ---- 数据加载 ----
 
   const loadSummary = useCallback(async () => {
     try {
@@ -105,9 +287,12 @@ export function WorkspaceShell() {
       setSending(true);
 
       try {
+        // 多轮上下文直接由消息流派生（含刷新前恢复的历史轮次）
         const resp = await api.chat(
           text,
-          conversationRef.current.map((c) => `${c.role === "user" ? "User" : "Assistant"}: ${c.content}`),
+          conversationFromMessages(messages).map(
+            (c) => `${c.role === "user" ? "User" : "Assistant"}: ${c.content}`,
+          ),
         );
 
         // 完成后按 trace_id 补拉完整执行轨迹（tool calls / memory deltas / failure codes）
@@ -133,11 +318,6 @@ export function WorkspaceShell() {
               : x,
           ),
         );
-        conversationRef.current = [
-          ...conversationRef.current,
-          { role: "user", content: text },
-          { role: "assistant", content: resp.result ?? "" },
-        ];
       } catch (e) {
         const failed: AgentRun = {
           ...run,
@@ -162,7 +342,7 @@ export function WorkspaceShell() {
         loadSummary();
       }
     },
-    [loadSummary],
+    [loadSummary, messages],
   );
 
   // Inspector 展示当前 run；无会话内 run 时回退最近一条历史 trace
@@ -200,6 +380,13 @@ export function WorkspaceShell() {
           runsById={runsById}
           sending={sending}
           onSend={sendMessage}
+          sessions={displaySessions}
+          activeSessionId={activeId}
+          onSwitchSession={switchSession}
+          onNewSession={newSession}
+          onArchiveSession={archiveSession}
+          onUnarchiveSession={unarchiveSession}
+          onDeleteSession={deleteSession}
         />
         <div className="hidden lg:flex">
           <AgentRunInspector run={viewRun} live={viewRun?.status === "running"} />
