@@ -233,6 +233,7 @@ for i, msg in enumerate(st.session_state.messages):
                           on_click=_submit_feedback, args=("memory_wrong",))
 
 # 输入框
+prompt = st.chat_input("发消息给 Agent…")
 if prompt:
     _ask(prompt)
     st.rerun()
