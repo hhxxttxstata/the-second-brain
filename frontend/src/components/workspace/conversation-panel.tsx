@@ -1,7 +1,9 @@
-// 中间 Main — Conversation Header / 消息流 / Input Composer
+// 中间 Main — Conversation Header（含历史会话切换）/ 消息流 / Input Composer
 import { useEffect, useRef, useState } from "react";
 import { Database, ListTodo, SendHorizontal } from "lucide-react";
 import type { AgentRun, ChatMessage, WorkspaceSnapshot } from "@/lib/workspace/types";
+import type { StoredSession } from "@/lib/workspace/session-store";
+import { SessionSwitcher } from "./session-switcher";
 import { MessageItem } from "./message-item";
 import { EmptyState, Spinner } from "./ui";
 
@@ -11,12 +13,26 @@ export function ConversationPanel({
   runsById,
   sending,
   onSend,
+  sessions,
+  activeSessionId,
+  onSwitchSession,
+  onNewSession,
+  onArchiveSession,
+  onUnarchiveSession,
+  onDeleteSession,
 }: {
   snapshot: WorkspaceSnapshot | null;
   messages: ChatMessage[];
   runsById: Map<string, AgentRun>;
   sending: boolean;
   onSend: (text: string) => void;
+  sessions: StoredSession[];
+  activeSessionId: string | null;
+  onSwitchSession: (id: string) => void;
+  onNewSession: () => void;
+  onArchiveSession: (id: string) => void;
+  onUnarchiveSession: (id: string) => void;
+  onDeleteSession: (id: string) => void;
 }) {
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -43,8 +59,17 @@ export function ConversationPanel({
       {/* Conversation Header */}
       <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-edge bg-base-900/60 px-4 py-2">
         <div className="min-w-0">
-          <p className="truncate text-xs font-semibold text-ink">Research Session</p>
-          <p className="font-mono text-[10px] text-faint">Personal AI Workspace</p>
+          <SessionSwitcher
+            sessions={sessions}
+            activeId={activeSessionId}
+            disabled={sending}
+            onSelect={onSwitchSession}
+            onNew={onNewSession}
+            onArchive={onArchiveSession}
+            onUnarchive={onUnarchiveSession}
+            onDelete={onDeleteSession}
+          />
+          <p className="mt-0.5 font-mono text-[10px] text-faint">Personal AI Workspace</p>
         </div>
         <div className="flex-1" />
         <div className="flex items-center gap-3 font-mono text-[10px] text-mute">
