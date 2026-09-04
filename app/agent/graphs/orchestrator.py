@@ -575,8 +575,21 @@ def _run_chat_task(state, trace, _step, text: str, user_id: str) -> dict:
 
     graph = build_chatbot_graph()
 
+    # thread_id = run_id（调用方传 event_id 时跨轮稳定），chatbot 图的 SqliteSaver
+    # checkpoint 按 thread 累积历史：已有历史则忽略回传 conversation（避免每轮
+    # 重复累积，同 Streamlit 2026-08 改造）；空线程用它做一次性种子（老会话迁移）。
+    chat_thread = f"chat_{state.get('run_id') or uuid.uuid4().hex[:10]}"
+    config = {"configurable": {"thread_id": chat_thread}}
+    try:
+        thread_seeded = bool((graph.get_state(config).values or {}).get("messages"))
+    except Exception:
+        thread_seeded = False
+
     messages: list = []
     conv = state.get("conversation", [])
+    if conv and thread_seeded:
+        _step("chatbot.context", "checkpoint 命中 — 历史由线程累积，忽略回传 conversation")
+        conv = []
     if conv:
         # ── Context Pressure Monitor: 历史超预算时自动压缩 ──
         try:
@@ -625,10 +638,10 @@ def _run_chat_task(state, trace, _step, text: str, user_id: str) -> dict:
             else:
                 messages.append(HumanMessage(content=content))
 
+    if conv and not thread_seeded:
+        _step("chatbot.context", f"空线程 — 以回传 conversation 做历史种子（{len(conv)} 轮）")
     messages.append(HumanMessage(content=text))
 
-    chat_thread = f"chat_{state.get('run_id') or uuid.uuid4().hex[:10]}"
-    config = {"configurable": {"thread_id": chat_thread}}
     response = graph.invoke(
         {"messages": messages},
         config,

@@ -62,7 +62,8 @@ function bootstrap(): {
   messages: ChatMessage[];
   runs: AgentRun[];
 } {
-  const list = loadSessions();
+  // 空会话不落盘后，localStorage 里 0 消息的记录只会是历史遗留存根，直接清掉
+  const list = loadSessions().filter((s) => s.messages.length > 0);
   const target =
     list.find((s) => s.id === loadActiveSessionId() && !s.archived) ?? latestActive(list);
   if (target) {
@@ -72,9 +73,9 @@ function bootstrap(): {
     return { sessions: nextList, activeId: revived.id, messages: revived.messages, runs: revived.runs };
   }
   const fresh = createSession();
-  const nextList = [fresh, ...list.filter((s) => s.id !== fresh.id)];
-  persistSessions(nextList, fresh.id);
-  return { sessions: nextList, activeId: fresh.id, messages: [], runs: [] };
+  // 空会话不落盘：只记录 activeId，首次发消息后由写穿 effect 持久化
+  persistSessions(list, fresh.id);
+  return { sessions: [fresh, ...list], activeId: fresh.id, messages: [], runs: [] };
 }
 
 export function WorkspaceShell() {
@@ -132,8 +133,15 @@ export function WorkspaceShell() {
       if (id === activeId) return;
       const list = mergedSessions();
       const target = list.find((s) => s.id === id);
-      if (!target || target.archived) return;
-      persistSessions(list, id);
+      if (!target) return;
+      // 归档条目点击 = 恢复并直接打开
+      const nextList = target.archived
+        ? upsertSession(list, { ...target, archived: false })
+        : list;
+      // 必须回写 sessions state：merged 结果此前只进了 localStorage，
+      // 不回写会导致切走再切回时拿到过期消息
+      setSessions(nextList);
+      persistSessions(nextList, id);
       setActiveId(id);
       setMessages(target.messages);
       setRuns(target.runs);
@@ -144,9 +152,10 @@ export function WorkspaceShell() {
 
   const newSession = useCallback(() => {
     const fresh = createSession();
-    const nextList = [fresh, ...mergedSessions()];
-    persistSessions(nextList, fresh.id);
-    setSessions(nextList);
+    const list = mergedSessions();
+    // 空会话不落盘：首次发消息后由写穿 effect 持久化
+    persistSessions(list, fresh.id);
+    setSessions([fresh, ...list]);
     setActiveId(fresh.id);
     setMessages([]);
     setRuns([]);
@@ -168,10 +177,12 @@ export function WorkspaceShell() {
           setMessages(next.messages);
           setRuns(next.runs);
           setCurrentRunId(next.runs[0]?.id ?? null);
+          setSessions(list);
         } else {
           const fresh = createSession();
-          list = [fresh, ...list];
+          // 空会话不落盘：首次发消息后由写穿 effect 持久化
           persistSessions(list, fresh.id);
+          setSessions([fresh, ...list]);
           setActiveId(fresh.id);
           setMessages([]);
           setRuns([]);
@@ -179,8 +190,8 @@ export function WorkspaceShell() {
         }
       } else {
         persistSessions(list, activeId);
+        setSessions(list);
       }
-      setSessions(list);
     },
     [mergedSessions, activeId],
   );
@@ -287,12 +298,14 @@ export function WorkspaceShell() {
       setSending(true);
 
       try {
-        // 多轮上下文直接由消息流派生（含刷新前恢复的历史轮次）
+        // event_id = 会话窗口唯一ID：后端按它累积 checkpoint 历史；
+        // conversation 回传仅在空线程（首次/老会话迁移）时作为种子被采用
         const resp = await api.chat(
           text,
           conversationFromMessages(messages).map(
             (c) => `${c.role === "user" ? "User" : "Assistant"}: ${c.content}`,
           ),
+          activeId ?? undefined,
         );
 
         // 完成后按 trace_id 补拉完整执行轨迹（tool calls / memory deltas / failure codes）
@@ -342,7 +355,7 @@ export function WorkspaceShell() {
         loadSummary();
       }
     },
-    [loadSummary, messages],
+    [loadSummary, messages, activeId],
   );
 
   // Inspector 展示当前 run；无会话内 run 时回退最近一条历史 trace

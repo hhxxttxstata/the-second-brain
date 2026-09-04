@@ -24,6 +24,9 @@ class ChatRequest(BaseModel):
     text: str
     user_id: str = "default_user"
     conversation: list[str] | None = None
+    # 事件ID：会话窗口级唯一ID（前端 sess_*）。同窗口多轮共享同一执行线程，
+    # chatbot 子图 checkpoint 按它累积历史；缺省则每次请求独立线程（兼容旧客户端）。
+    event_id: str | None = None
 
 
 class PlanRequest(BaseModel):
@@ -50,6 +53,8 @@ def agent_chat(req: ChatRequest) -> dict[str, Any]:
         input_text=req.text,
         user_id=req.user_id,
         conversation=req.conversation,
+        # 事件ID → 执行线程：同窗口续聊共享 checkpoint 历史
+        thread_id=(req.event_id or "").strip()[:128] or None,
     )
 
 

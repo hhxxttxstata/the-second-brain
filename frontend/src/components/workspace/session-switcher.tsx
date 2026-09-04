@@ -1,5 +1,6 @@
 // 会话切换器 — Conversation Header 左侧的历史会话下拉：
 // 活跃会话列表 / 新建 / 归档；归档列表可恢复或彻底删除。
+// 点击任意条目（含归档）直接打开该会话，归档条目自动恢复。
 // 历史会话持久化在 localStorage，刷新不丢失，仅归档后从主列表移除。
 import { useState } from "react";
 import {
@@ -37,7 +38,10 @@ export function SessionSwitcher({
   const [showArchived, setShowArchived] = useState(false);
 
   const active = sessions.find((s) => s.id === activeId) ?? null;
-  const visible = sessions.filter((s) => s.archived === showArchived);
+  // 空会话（尚无任何消息）不进列表，当前活跃的新窗口除外
+  const visible = sessions.filter(
+    (s) => s.archived === showArchived && (s.messages.length > 0 || s.id === activeId),
+  );
 
   const pick = (id: string) => {
     onSelect(id);
@@ -108,7 +112,7 @@ export function SessionSwitcher({
                   return (
                     <div
                       key={s.id}
-                      onClick={() => !s.archived && pick(s.id)}
+                      onClick={() => pick(s.id)}
                       className={`group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors ${
                         isActive ? "bg-base-800" : "hover:bg-base-850"
                       }`}
@@ -123,7 +127,7 @@ export function SessionSwitcher({
                           {s.archived ? " · 已归档" : ""}
                         </p>
                       </div>
-                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-60 transition-opacity hover:opacity-100">
                         {s.archived ? (
                           <>
                             <button

@@ -168,6 +168,7 @@ export const api = {
   chat: (
     text: string,
     conversation: string[],
+    eventId?: string,
     timeoutMs = 180_000,
   ): Promise<RawChatResponse> =>
     fetchJson<RawChatResponse>(
@@ -178,7 +179,10 @@ export const api = {
         body: JSON.stringify({
           text,
           user_id: "default_user",
-          // 后端 ChatRequest.conversation 是 list[str]；orchestrator 取最近 5 条注入 planner
+          // event_id = 会话窗口唯一ID（sess_*）：后端映射为执行线程，
+          // 同窗口多轮共享 checkpoint 历史；每轮交互的唯一ID是响应里的 trace_id
+          event_id: eventId,
+          // 后端 ChatRequest.conversation 是 list[str]；仅在空线程时作历史种子
           conversation: conversation.slice(-10),
         }),
       },

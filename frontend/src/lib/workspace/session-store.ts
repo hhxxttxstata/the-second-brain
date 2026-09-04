@@ -1,9 +1,11 @@
 // 会话本地存储 — 历史会话持久化到 localStorage，刷新不丢失；
-// 仅当用户显式归档后才从主列表移除（归档可恢复）。
-// 后端 /agent/v2/chat 不含 session 概念，会话管理完全在前端本地完成。
+// 仅当用户显式归档后才从主列表移除（归档可恢复，点击归档条目直接恢复并打开）。
+// ID 模型：会话窗口 = 唯一事件ID（id，即 /agent/v2/chat 的 event_id，后端按它
+// 累积 checkpoint 历史）；窗口内每轮交互 = 唯一 trace_id（后端返回，前端作该轮 runId）。
 import type { AgentRun, ChatMessage } from "./types";
 
 export interface StoredSession {
+  /** 事件ID：会话窗口唯一标识（sess_*），随 /agent/v2/chat 的 event_id 上送 */
   id: string;
   /** 首条用户消息截断，空会话为"新会话" */
   title: string;
