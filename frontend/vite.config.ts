@@ -14,9 +14,10 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 5173,
     proxy: {
-      '/agent': 'http://localhost:8000',
-      '/workspace': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
+      // 显式 127.0.0.1：本机 localhost 可能优先解析 ::1，而该地址被 WSL relay 占用
+      '/agent': 'http://127.0.0.1:8000',
+      '/workspace': 'http://127.0.0.1:8000',
+      '/health': 'http://127.0.0.1:8000',
     },
   },
 }))

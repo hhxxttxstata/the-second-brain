@@ -1,10 +1,10 @@
 # Personal Knowledge Agent — Docker Compose 一键启动
-# 仿 Dify 模式：
 #   1. cp .env.example .env   （配置 LLM_API_KEY）
 #   2. docker compose up -d --build
-#   3. 浏览器打开 http://localhost:8000/workspace/  （三栏 Agent 工作台）
+#   3. 浏览器打开 http://127.0.0.1:8000/workspace/
 #
-# 数据持久化：agent_data 卷挂载，重启/升级不丢记忆与任务
+# Docker Desktop 开机自启 + restart: unless-stopped ⇒ Docker 启动即自动拉起网站
+# agent_data / vault 直接 bind mount 宿主机目录：容器与本地开发共享同一份记忆与笔记
 services:
   agent:
     build: .
@@ -14,22 +14,19 @@ services:
     env_file:
       - .env
     environment:
-      # 容器内数据目录（挂载卷，持久化）
       AGENT_DATA_DIR: /app/agent_data
-      # 容器内 vault 目录（无 vault 模式下初始化为空）
-      OBSIDIAN_VAULT: /app/vault
-      # 容器内 Python 输出编码（中文）
+      # 宿主机 vault 路径（.env 未配置时用本地默认 D:/MYWORLD）
+      OBSIDIAN_VAULT: ${OBSIDIAN_VAULT:-D:/MYWORLD}
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: "1"
     volumes:
-      # 数据持久化：记忆/任务/trace/反馈 全部在这
+      # SQLite WAL 无法在 Windows bind mount 上运行（disk I/O error）→ 用命名卷。
+      # 首次部署用本地 agent_data 播种（见 docs），容器与本地数据以此卷为准。
       - agent_data:/app/agent_data
-      # vault 挂载（可选）：有本地笔记时挂载，如 ./MYWORLD:/app/vault
-      - vault:/app/vault
+      # Obsidian vault：markdown 无 SQLite 限制，直接 bind mount 本地笔记库
+      - ${OBSIDIAN_VAULT:-D:/MYWORLD}:/app/vault
     restart: unless-stopped
 
 volumes:
   agent_data:
-    name: pka-agent-data
-  vault:
-    name: pka-vault
+    name: pka-agent-data-v2

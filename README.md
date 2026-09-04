@@ -52,14 +52,14 @@ pip install -r requirements.txt      # 国内可加 -i https://pypi.tuna.tsinghu
 # A. Workspace 工作台（推荐 — 三栏 Agent 可视化）
 python -X utf8 -m uvicorn app.main:app --port 8000
 #   首次需构建前端：cd frontend && npm install && npm run build
-#   浏览器打开 http://localhost:8000/workspace/
+#   浏览器打开 http://127.0.0.1:8000/workspace/
 
 # B. 终端对话（最简单）
 python -X utf8 -m app.chat
 
 # C. Docker 一键起（自动构建前端 + API + Workspace UI）
 cp .env.example .env   # 填好 key 后
-docker compose up -d --build   # 浏览器打开 http://localhost:8000/workspace/
+docker compose up -d --build   # 浏览器打开 http://127.0.0.1:8000/workspace/
 ```
 
 ---
