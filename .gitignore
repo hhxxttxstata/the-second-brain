@@ -19,6 +19,9 @@ frontend/dist/
 .vscode/
 *.swp
 
+# 会话数据（AI 协作工具的本地会话产物，含隐私，不提交）
+.zcode/
+
 # OS
 .DS_Store
 Thumbs.db
