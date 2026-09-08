@@ -145,6 +145,13 @@ def upsert_index_entry(category: str, title: str, link: str, summary: str,
     _ensure_dir()
     link_text = f"见 {link}.md"
 
+    # 悬空指针预警：link 文件不存在时仍然写入（保持调用方顺序假设），
+    # 但留日志；启动巡检 prune_dangling_index_entries 会兜底清理
+    if not (_MEMORY_DIR / (link + ".md")).exists():
+        from app.core.logging import logger
+        logger.warning("memory.index.dangling_link",
+                       link=link, hint="topic file missing at index write time")
+
     if not _INDEX_FILE.exists():
         _write_full_index()
 
@@ -189,6 +196,38 @@ def _write_index_lines(lines: list[str]) -> None:
     text = re.sub(r"_Last updated: [\d-]+_",
                   f"_Last updated: {date.today().isoformat()}_", text, count=1)
     _INDEX_FILE.write_text(text, encoding="utf-8")
+
+
+# 悬空索引指针行："- 标题: 见 xxx.md | ..."（MEMORY.md 每轮注入 prompt，
+# 指向不存在文件的指针等于把幻觉常驻上下文）
+_DANGLING_LINK_RE = re.compile(r"^\s*-\s+.*见\s+(\S+?)\.md")
+
+
+def prune_dangling_index_entries() -> list[str]:
+    """巡检 MEMORY.md：删除指向不存在 topic 文件的指针行，返回被删行。
+
+    启动时调用（main.lifespan）；文件被外部删除（如敏感数据清除）而索引未同步时，
+    由本函数兜底，避免悬空指针污染后续所有轮次的记忆评估。
+    """
+    if not _INDEX_FILE.exists():
+        return []
+    try:
+        lines = _INDEX_FILE.read_text(encoding="utf-8").split("\n")
+    except OSError:
+        return []
+    kept: list[str] = []
+    removed: list[str] = []
+    for line in lines:
+        m = _DANGLING_LINK_RE.match(line)
+        if m:
+            target = _MEMORY_DIR / (m.group(1) + ".md")
+            if not target.exists():
+                removed.append(line.strip())
+                continue
+        kept.append(line)
+    if removed:
+        _write_index_lines(kept)
+    return removed
 
 
 # ---------------------------------------------------------------------------

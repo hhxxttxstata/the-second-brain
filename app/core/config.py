@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     llm_api_key: str | None = None
     llm_model: str = "deepseek-chat"
     llm_base_url: str = "https://api.deepseek.com/v1"
+    # planner 专用小模型（cascade：小模型判意图，大模型答内容）
+    # 置空则跟随 llm_model；deepseek-v4-flash 在 llm.py 中自动禁 thinking，延迟低
+    planner_model: str = "deepseek-v4-flash"
+    # 规则短路层开关：纯问候/显式记忆指令等高置信意图跳过 planner LLM
+    planner_shortcut: bool = True
 
     # Obsidian vault — 人类写的知识资产
     # 云部署时通过 OBSIDIAN_VAULT 环境变量指定（可为空目录，无 vault 模式）

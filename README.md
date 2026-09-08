@@ -109,15 +109,13 @@ Trace → Failure → Candidate → Regression → Promoted
 👤 帮我分析一下秋招准备               → 反思 Agent
 👤 plan                              → 读日记，生成今日计划
 👤 帮我做一个面经统计表               → 生成 Excel（agent_data/outputs/）
-👤 写段代码把这份数据清洗一下         → 受控执行 Python（沙箱 + 超时保护）
+👤 写段代码把这份数据清洗一下         → 受控执行 Python（子进程隔离 + 工作目录限定 + 超时保护）
 ```
 
 ### 内置命令
 
 | 命令 | 作用 |
 |---|---|
-| `plan` | 生成今日计划 |
-| `status` | 系统状态 |
 | `model` | 查看可用模型列表 |
 | `model <序号或别名>` | 切换模型（持久化，重启仍生效） |
 | `help` / `quit` | 帮助 / 退出 |
@@ -126,14 +124,14 @@ Trace → Failure → Candidate → Regression → Promoted
 
 - **本地运行**：`.env` 里改 `OBSIDIAN_VAULT` 指向你的笔记目录即可，无其他配置
 - **Docker 运行**：在 `docker-compose.yml` 把笔记目录挂载进来（`./你的笔记:/app/vault`）
-- vault 是双向工作区：Agent 读你的笔记回答问题，也会写回内容（如每日计划写入 `diaries/`），你在 Obsidian 里实时可见
+- vault 定位是**只读知识源**：Agent 读你的笔记回答问题；Agent 的产出（每日计划、任务、记忆）保存在 `agent_data/`，在 Workspace 工作台或 CLI 里查看，不反向写入你的笔记库
 
 ### CLI 与 API
 
 ```bash
-python -m app.cli ask "问题"         # 单次提问
-python -m app.cli plan               # 生成今日计划
-python -m app.cli status             # 系统状态
+python -m app.cli ask "问题"         # 单次提问（本地直连 Orchestrator）
+python -m app.cli eval               # golden 回归评测
+python -m app.cli evolve             # 手动跑一轮自进化
 python -m app.cli help               # 全部命令（含评测/自进化）
 
 python -X utf8 -m uvicorn app.main:app --port 8000    # API 服务

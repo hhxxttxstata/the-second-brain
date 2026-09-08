@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from pydantic import AliasChoices, BaseModel, Field
 from typing_extensions import TypedDict
 
 from app.core.logging import logger
@@ -21,6 +22,18 @@ from ..agent_data_service import (
     write_memory,
 )
 from .llm import get_chat_model
+from .structured import invoke_structured
+
+
+class MemoryDecision(BaseModel):
+    """decide_node 结构化输出 schema（type 经 alias 兼容 prompt 中的 "type" 键）。"""
+    decision: str = "skip"  # write | skip | update
+    reason: str = ""
+    memory_type: str = Field(
+        default="episodic",
+        validation_alias=AliasChoices("type", "memory_type"),
+    )
+    content_memory: str = ""
 
 
 class MemoryAgentState(TypedDict):
@@ -140,16 +153,11 @@ def decide_node(state: MemoryAgentState) -> MemoryAgentState:
     )
     model = get_chat_model(temperature=0.3)
     try:
-        response = model.invoke(prompt)
-        text = response.content if hasattr(response, "content") else str(response)
-        if text.startswith("```"):
-            import re
-            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
-        data = json.loads(text)
-        state["decision"] = data.get("decision", "skip")
-        state["decision_reason"] = data.get("reason", "")
-        state["target_type"] = data.get("type", "episodic")
-        state["content"] = data.get("content_memory", trigger)
+        parsed, _raw = invoke_structured(model, MemoryDecision, prompt, retries=1)
+        state["decision"] = parsed.decision
+        state["decision_reason"] = parsed.reason
+        state["target_type"] = parsed.memory_type
+        state["content"] = parsed.content_memory or trigger
         if state["decision"] in ("write", "update"):
             logger.info("memory.decide.yes",
                         step=f"✅ 决定记忆 (type={state['target_type']})",

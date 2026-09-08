@@ -1,0 +1,30 @@
+[
+  {
+    "id": "auto-benchmark-20260908121121",
+    "intent": "八股问答（幂等 + schema）",
+    "input": "在幂等的八股下面回答：那这个幂等能否完全做到防止死循环？；在schema的八股下面回答：代码是如何进行校验schema的？",
+    "expected_route": "chatbot",
+    "stage": "candidate",
+    "tags": [
+      "auto_captured",
+      "benchmark"
+    ],
+    "note": "benchmark 失败自动捕获 (2026-09-08)",
+    "known_issue": "失败码: ['OUTCOME_NOT_MET']；trace: trace_248a7b777f",
+    "trace_ref": "trace_248a7b777f",
+    "created_at": "2026-09-08",
+    "failure_codes": [
+      "OUTCOME_NOT_MET"
+    ],
+    "trace_snapshot": {
+      "route": "chatbot",
+      "outcomes_ok": false,
+      "unknown_outcomes": 0,
+      "forbidden_hits": [],
+      "tool_calls": 13,
+      "completed_steps": null,
+      "total_steps": null,
+      "output_preview": "我需要等待用户的回复来决定如何处理。我已经澄清了文件里已有回答的现状，等待用户选择 A / B / C。"
+    }
+  }
+]

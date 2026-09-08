@@ -1,18 +1,21 @@
 """Routes for the LangGraph Agent system — Orchestrator + 5 sub-agents.
 
-  POST /agent/v2/chat         对话式（路由到 orchestrator）
+  POST /agent/v2/chat          对话式（路由到 orchestrator）
+  POST /agent/v2/chat/stream   对话式流式（SSE：step/token 增量 + final 完整结果）
   POST /agent/v2/plan         每日计划（LLM 驱动版）
   POST /agent/v2/reflect      反思分析
   POST /agent/v2/memory       记忆管理
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.agent.graphs.orchestrator import run_orchestrator
+from app.agent.graphs.orchestrator import run_orchestrator, stream_orchestrator
 from app.agent.graphs.plan_graph import run_plan_graph
 from app.agent.graphs.reflect_graph import run_reflect
 from app.agent.graphs.memory_graph import run_memory_agent
@@ -48,13 +51,49 @@ class MemoryRequest(BaseModel):
 
 @router.post("/chat")
 def agent_chat(req: ChatRequest) -> dict[str, Any]:
-    """Orchestrator — 自动路由到正确的子 Agent。"""
+    """Orchestrator — 自动路由到正确的子 Agent（一次性返回）。"""
     return run_orchestrator(
         input_text=req.text,
         user_id=req.user_id,
         conversation=req.conversation,
         # 事件ID → 执行线程：同窗口续聊共享 checkpoint 历史
         thread_id=(req.event_id or "").strip()[:128] or None,
+    )
+
+
+@router.post("/chat/stream")
+async def agent_chat_stream(req: ChatRequest) -> StreamingResponse:
+    """Orchestrator — 流式对话（SSE）。
+
+    事件帧 `data: {json}\\n\\n`，序列：planner_done → step* → token* → final；
+    final 与 /chat 返回结构一致（前端可无缝复用 adapter）。以 `data: [DONE]` 结束。
+    """
+    thread_id = (req.event_id or "").strip()[:128] or None
+
+    async def event_gen():
+        try:
+            async for ev in stream_orchestrator(
+                input_text=req.text,
+                user_id=req.user_id,
+                conversation=req.conversation,
+                thread_id=thread_id,
+            ):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # 流中异常也以 final 帧告知，前端可降级/提示
+            yield "data: " + json.dumps(
+                {"type": "final", "success": False, "route": "error",
+                 "result": str(exc), "error": str(exc)},
+                ensure_ascii=False) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # nginx 反代时不缓冲，保证逐帧到达
+        },
     )
 
 

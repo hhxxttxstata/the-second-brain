@@ -1,13 +1,7 @@
-"""CLI entry point for Agentic Data Platform.
+"""CLI entry point for the Personal Knowledge Agent.
 
-Usage:
-    python -m app.cli plan              Generate daily plan
-    python -m app.cli steward           Run data steward audit
-    python -m app.cli search <query>    Search knowledge base
-    python -m app.cli ingest <path>     Ingest a file
-    python -m app.cli scan              Scan knowledge directory
-    python -m app.cli ask <question>    Ask a question (context + plan)
-    python -m app.cli status            Show system status
+本地直连命令（ask/eval/evolve/persona/report 等本地执行，无需服务器）；
+HTTP 类命令仅保留服务真实暴露的端点。用法：python -m app.cli help
 """
 
 from __future__ import annotations
@@ -17,6 +11,14 @@ import sys
 from datetime import date
 
 import requests
+from pydantic import BaseModel, Field
+
+
+class _JudgeVerdict(BaseModel):
+    """LLM judge 结构化裁决（_grade_with_llm 用，with_structured_output JSON mode）。"""
+    verdict: str = "unknown"  # pass | fail | unknown
+    score: int = 0
+    reasons: list[str] = Field(default_factory=list)
 
 # Try common ports for the running server
 import os
@@ -71,128 +73,6 @@ def _get(path: str) -> dict:
         print(f"❌ 无法连接服务器 ({API_BASE}/health)")
         print("   请先启动:  uvicorn app.main:app --reload")
         sys.exit(1)
-
-
-def cmd_plan():
-    """生成今日计划"""
-    print("🤖 正在生成今日计划...")
-    result = _post("/agent/daily-plan")
-    if not result.get("success"):
-        print(f"❌ 失败: {result.get('error', '未知错误')}")
-        return
-
-    items = result.get("items", [])
-    print(f"\n📋 今日计划 ({result.get('date', date.today().isoformat())})")
-    print(f"   共 {len(items)} 项，基于 {result.get('context_count', 0)} 个数据资产\n")
-
-    for i, item in enumerate(items, 1):
-        src = item.get("source", "")
-        icon = {"diary_todo": "📓", "pending_task": "🔄", "signal": "📡",
-                "stable_profile": "🎯", "default": "📝"}.get(src, "•")
-        print(f"  {i}. {icon} [{item.get('priority', 'medium').upper()}] {item.get('title', '')}")
-        if item.get("description"):
-            print(f"     {item['description'][:80]}")
-
-    print(f"\n   ⏱  {result.get('latency_ms', 0)}ms")
-
-    if result.get("plan_id"):
-        print(f"\n💡 采纳这条计划:  curl -X POST {API_BASE}/agent/adopt-plan"
-              f" -H 'Content-Type: application/json'"
-              f" -d '{{\"plan_id\": \"{result['plan_id']}\"}}'")
-
-
-def cmd_steward():
-    """数据资产巡检"""
-    print("🔍 正在巡检数据资产...")
-    result = _post("/agent/data-steward")
-    if not result.get("success"):
-        print(f"❌ 失败: {result.get('error', '未知错误')}")
-        return
-
-    findings = result.get("findings", [])
-    print(f"\n🛡️  Data Steward 巡检报告 ({result.get('date', date.today().isoformat())})")
-    print(f"   总资产: {result.get('total_assets', 0)} | 发现项: {result.get('total_findings', 0)}")
-
-    severity_icons = {"high": "🔴", "medium": "🟡", "low": "🟢", "info": "ℹ️"}
-
-    # Group by severity
-    for sev in ["high", "medium", "low", "info"]:
-        sev_items = [f for f in findings if f.get("severity") == sev][:5]
-        if not sev_items:
-            continue
-        icon = severity_icons.get(sev, "•")
-        print(f"\n   {icon} {sev.upper()}")
-        for f in sev_items:
-            detail = f.get("detail", "")[:80]
-            print(f"     [{f.get('type', '?')}] {detail}")
-
-    other = len(findings) - sum(1 for f in findings if f.get("severity") in severity_icons)
-    if other > 0:
-        print(f"\n   ...及其他 {other} 项")
-
-    print(f"\n   ⏱  {result.get('latency_ms', 0)}ms")
-
-
-def cmd_search(query: str):
-    """搜索知识库"""
-    if not query:
-        print("❌ 请输入搜索关键词")
-        print("   用法: python -m app.cli search <关键词>")
-        return
-
-    print(f"🔎 正在搜索: {query}")
-    result = _post("/knowledge/search", {"query": query, "top_k": 5})
-    print("DEBUG result keys:", list(result.keys()))
-    print("DEBUG total:", result.get("total", "MISSING"))
-    items = result.get("results", [])
-    print(f"\n📚 搜索结果 ({len(items)} 条)\n")
-
-    for i, r in enumerate(items, 1):
-        print(f"  {i}. [{r.get('score', 0):.3f}] {r.get('text', '')[:80]}...")
-        print(f"     📁 {r.get('source_file', '')}")
-        if r.get("heading"):
-            print(f"     📎 {r['heading']}")
-        print()
-
-
-def cmd_ingest(path: str):
-    """接入一个文件"""
-    if not path:
-        print("❌ 请指定文件路径")
-        print("   用法: python -m app.cli ingest <文件路径>")
-        return
-
-    print(f"📥 正在接入: {path}")
-    result = _post("/knowledge/ingest", {"file_path": path})
-
-    if "error" in result:
-        print(f"❌ 失败: {result['error']}")
-        return
-
-    r = result.get("result", {})
-    print(f"   raw: {r.get('raw_asset_id', 'N/A')}")
-    print(f"   clean: {r.get('clean_asset_id', 'N/A')}")
-    print(f"   ingested: {r.get('ingested_count', 0)} | skipped: {r.get('skipped_count', 0)}")
-    if r.get("ingested_count", 0) > 0:
-        print(f"   ✅ 接入完成")
-    else:
-        print(f"   ⏭️  跳过（已存在）")
-
-
-def cmd_scan():
-    """全量扫描知识库"""
-    print("📂 正在扫描知识目录...")
-    result = _post("/knowledge/scan")
-
-    total = result.get("total_files", 0)
-    ingested = result.get("ingested", 0)
-    print(f"\n   扫描文件: {total}")
-    print(f"   新接入: {ingested}")
-    if result.get("errors"):
-        print(f"   错误: {len(result['errors'])}")
-        for e in result["errors"][:3]:
-            print(f"     ⚠️  {e.get('error', str(e))[:80]}")
-    print(f"   ✅ 扫描完成")
 
 
 def cmd_ask(question: str):
@@ -270,40 +150,6 @@ def _cmd_ui():
     print("⚠️ 终端 UI (webui) 已弃用并归档。\n"
           "   主入口: streamlit run app/chat_web.py\n"
           "   调试入口: python -X utf8 -m app.chat")
-
-
-def cmd_status():
-    """系统状态"""
-    print("📊 Agentic Data Platform — 状态\n")
-
-    # Health
-    health = _get("/health")
-    print(f"  Server: {health.get('status', 'unknown')}")
-    print(f"  Version: {health.get('version', '?')}")
-
-    # Metrics
-    metrics = _get("/observability/metrics")
-    a = metrics.get("asset_metrics", {})
-    ag = metrics.get("agent_metrics", {})
-    g = metrics.get("governance_metrics", {})
-
-    print(f"\n📦 数据资产")
-    print(f"  总资产: {a.get('total_assets', '?')}")
-    print(f"  平均质量分: {a.get('avg_quality_score', '?')}")
-    print(f"  高质量占比: {a.get('high_quality_ratio', '?')}%")
-    print(f"  过期资产: {a.get('expired_count', '?')}")
-
-    print(f"\n🤖 Agent")
-    print(f"  累计调用: {ag.get('total_traces', '?')}")
-    print(f"  工具成功率: {ag.get('tool_success_rate', '?')}%")
-    print(f"  上下文命中率: {ag.get('context_hit_rate', '?')}%")
-    print(f"  计划采纳率: {ag.get('plan_adoption_rate', '?')}%")
-
-    print(f"\n🛡️  治理")
-    print(f"  血缘完整率: {g.get('lineage_completeness', '?')}%")
-    print(f"  Steward 报告数: {g.get('steward_reports_generated', '?')}")
-
-    print(f"\n📎 Dashboard: {API_BASE}/observability/dashboard")
 
 
 def cmd_evolve():
@@ -639,14 +485,11 @@ def _grade_with_llm(cases: list[dict], report: dict) -> None:
         )
         data = None
         try:
-            resp = judge.invoke(prompt)
-            text = resp.content if hasattr(resp, "content") else str(resp)
-            if text.startswith("```"):
-                import re
-                text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
-            data = _json.loads(text)
-            verdict = data.get("verdict", "unknown")
-            score = data.get("score", 0)
+            from app.agent.graphs.structured import invoke_structured
+            parsed, _raw = invoke_structured(judge, _JudgeVerdict, prompt, retries=1)
+            data = parsed.model_dump()
+            verdict = data["verdict"]
+            score = data["score"]
         except Exception:
             verdict, score = "unknown", 0
 
@@ -1027,66 +870,15 @@ def cmd_persona():
     print()
     print("✅ 已保存，下次对话生效")
 
-    """用 LLM 对评测结果做深度评判。"""
-    import json
-    import re
-    from app.agent.graphs.llm import get_chat_model
-
-    prompt = ["请逐条评判路由正确性 + 任务完成度。\n"]
-    for r in report.get("results", []):
-        c = next((c for c in cases if c.get("intent") == r["intent"]), {})
-        out = (r.get("final_output") or r.get("output_preview") or "")[:200]
-        prompt.append(f'Case: intent={r["intent"]} route={r["route"]} expected={c.get("expected_route","?")}')
-        prompt.append(f'  input: {r.get("input","")[:60]}')
-        prompt.append(f'  output: {out}')
-        prompt.append('')
-    prompt.append('Output JSON: {"pass":[intents],"warn":[{"intent":"","reason":""}],"fail":[],"score":0-100,"top3_fixes":[""]}')
-
-    try:
-        model = get_chat_model(temperature=0.1)
-        resp = model.invoke("\n".join(prompt))
-        text = resp.content if hasattr(resp, "content") else str(resp)
-        if text.startswith("```"):
-            import re
-            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
-        data = json.loads(text)
-        print(f"\n  📊 LLM 评分: {data.get('score', '?')}/100")
-        print(f"  ✅ 通过: {len(data.get('pass',[]))} 条")
-        print(f"  ⚠️  告警: {len(data.get('warn',[]))} 条")
-        for w in data.get("warn", []):
-            print(f"    · {w.get('intent','')}: {w.get('reason','')[:100]}")
-        print(f"  Top 3 修复建议:")
-        for i, fix in enumerate(data.get("top3_fixes", []), 1):
-            print(f"    {i}. {fix[:120]}")
-    except Exception as e:
-        print(f"  ⚠️ LLM Grader 调用失败: {e}")
-
-        # 路由检查
-        route = r.get("route", "?")
-        case_obj = next((c for c in cases if c.get("intent") == r["intent"]), {})
-        expected = case_obj.get("expected_route")
-        if expected:
-            rm = "✅" if route == expected else "⚠️"
-            print(f"  {rm} 路由: {route} (期望: {expected})")
-        else:
-            print(f"  · 路由: {route}")
-
-    print()
-
 
 
 def print_help():
-    print("""Agentic Data Platform — CLI
+    print("""Personal Knowledge Agent — CLI
 
 用法:
     python -m app.cli <command> [args]
 
 命令:
-    plan                 生成今日计划
-    steward              运行数据资产巡检
-    search <关键词>       搜索知识库
-    ingest <文件路径>     接入一个文件
-    scan                 扫描知识目录
     ask <问题>           走 Orchestrator 自动路由
     reflect <内容>        反思分析
     memory <内容>         保存到长期记忆
@@ -1109,7 +901,6 @@ def print_help():
         evolve promote          手动跑 A/B 晋升门（--policy 指定）
         evolve rollback         harness 快照查看/恢复（--list / --to <snap_id>）
     ui                   启动终端 UI
-    status               系统状态
     help                 显示帮助
 """)
 
@@ -1128,11 +919,6 @@ def main():
     cmd = sys.argv[1]
 
     commands = {
-        "plan": cmd_plan,
-        "steward": cmd_steward,
-        "search": lambda: cmd_search(" ".join(sys.argv[2:])),
-        "ingest": lambda: cmd_ingest(" ".join(sys.argv[2:])),
-        "scan": cmd_scan,
         "ask": lambda: cmd_ask(" ".join(sys.argv[2:])),
         "reflect": lambda: cmd_reflect(" ".join(sys.argv[2:])),
         "memory": lambda: cmd_memory(" ".join(sys.argv[2:])),
@@ -1141,7 +927,6 @@ def main():
         "multiturn": cmd_multiturn,
         "persona": cmd_persona,
         "report": cmd_report,
-        "status": cmd_status,
         "evolve": cmd_evolve,
         "_abgate": cmd_abgate,
         "help": print_help,

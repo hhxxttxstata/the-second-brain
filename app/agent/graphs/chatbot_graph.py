@@ -240,7 +240,38 @@ def call_model_node(state: ChatState) -> dict:
     # 直接发给 LLM 会 400，调用前统一修复
     llm_messages = [SystemMessage(content=state.get("system", ""))] + _sanitize_messages(
         list(state.get("messages", [])))
-    response = model.invoke(llm_messages)
+
+    # 流式上下文（POST /agent/v2/chat/stream）→ 逐 token 推给前端；
+    # 普通 invoke 路径（CLI/eval/测试）无 stream writer，行为完全不变。
+    # writer 优先读 orchestrator 的线程本地桥（子图自身的 get_stream_writer
+    # 绑定子图内部 stream，写入会被丢弃）；桥为空时才尝试自身 context
+    response = None
+    writer = None
+    try:
+        from .structured import STREAM_WRITER_BRIDGE
+        writer = getattr(STREAM_WRITER_BRIDGE, "writer", None)
+    except Exception:
+        writer = None
+    if writer is None:
+        try:
+            from langgraph.config import get_stream_writer
+            writer = get_stream_writer()
+        except Exception:
+            writer = None
+    if writer is not None:
+        try:
+            merged = None
+            for chunk in model.stream(llm_messages):
+                merged = chunk if merged is None else merged + chunk
+                delta = getattr(chunk, "content", "")
+                if isinstance(delta, str) and delta:
+                    writer({"type": "token", "text": delta})
+            if merged is not None:
+                response = merged  # AIMessageChunk：tool_call_chunks 已合并成 tool_calls
+        except Exception:
+            response = None  # 流式失败 → 降级一次性 invoke
+    if response is None:
+        response = model.invoke(llm_messages)
     # 记录 LLM 用量到当前 trace（此前 set_llm_stats 无生产调用者, token 恒为 0）
     try:
         from ..trace import get_current_trace

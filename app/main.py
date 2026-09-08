@@ -34,6 +34,16 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("self_eval_skipped", error=str(exc))
 
+    # 记忆索引巡检：清理指向不存在 topic 文件的悬空指针（防幻觉常驻 prompt）
+    try:
+        from app.agent.topic_memory import prune_dangling_index_entries
+        removed = prune_dangling_index_entries()
+        if removed:
+            for line in removed:
+                logger.warning("memory_index_dangling_removed", entry=line)
+    except Exception as exc:
+        logger.warning("memory_index_prune_skipped", error=str(exc))
+
     yield
     logger.info("agent_shutting_down")
 

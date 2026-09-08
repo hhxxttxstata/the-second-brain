@@ -1,0 +1,18 @@
+{
+  "id": "fb-20260904130926",
+  "intent": "基于我现在对Agent开发的理解，我需要在一周之内搞定python、DeepAg",
+  "input": "基于我现在对Agent开发的理解，我需要在一周之内搞定python、DeepAgent/pi-agent架构、部署、前后端的基础知识，帮我准备这些知识资料",
+  "expected_route": "",
+  "stage": "candidate",
+  "tags": [
+    "user_feedback",
+    "tool_wrong"
+  ],
+  "note": "用户反馈回流 (2026-09-04)",
+  "known_issue": "用户反馈: tool_wrong — 只调用了plan这一个sub-agent，期望行为：先调工具搜索我的vault，掌握我的知识情况，再帮我准备我需要的知识资料，总结好了放入obsidian的某一个地方，",
+  "trace_ref": "trace_4667010d30",
+  "created_at": "2026-09-04",
+  "failure_codes": [
+    "USER_FEEDBACK_TOOL_WRONG"
+  ]
+}

@@ -1,0 +1,33 @@
+[
+  {
+    "id": "auto-benchmark-20260908121547",
+    "intent": "多意图：记忆 + 计划生成",
+    "input": "记住我的目标是秋招拿到AI offer，然后帮我生成今天的计划",
+    "expected_route": "memory",
+    "stage": "candidate",
+    "tags": [
+      "auto_captured",
+      "benchmark"
+    ],
+    "note": "benchmark 失败自动捕获 (2026-09-08)",
+    "known_issue": "失败码: ['OUTCOME_NOT_MET', 'FORBIDDEN_ACTION']；trace: trace_b13fe4c834",
+    "trace_ref": "trace_b13fe4c834",
+    "created_at": "2026-09-08",
+    "failure_codes": [
+      "OUTCOME_NOT_MET",
+      "FORBIDDEN_ACTION"
+    ],
+    "trace_snapshot": {
+      "route": "error",
+      "outcomes_ok": false,
+      "unknown_outcomes": 0,
+      "forbidden_hits": [
+        "【人工规则 forbid-drop-subsequent-intent】只执行第一个意图而丢弃后续计划生成 (多意图：后续意图（计划生成）被丢弃即触发)"
+      ],
+      "tool_calls": 0,
+      "completed_steps": null,
+      "total_steps": null,
+      "output_preview": "1 validation error for ChatOpenAI\nmodel\n  Input should be a valid string [type=string_type, input_value=None, input_type=NoneType]\n    For further information visit https://errors.pydantic.dev/2.13/v/string_type"
+    }
+  }
+]

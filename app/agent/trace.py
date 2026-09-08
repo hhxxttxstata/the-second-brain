@@ -156,6 +156,8 @@ def _trim_trace_dir() -> None:
     """滚动清理 traces/：超过 MAX_TRACES 时删除最旧的 trace_*.json。
 
     每次 save 后调用；只清理 trace_ 前缀文件，不动 benchmark 等其它产物。
+    被删除的 trace_id 记入 cleanup_log.jsonl——否则蒸馏教训的 provenance
+    会"无故"失效（历史教训从此不可溯源）。
     """
     try:
         files = sorted(
@@ -165,11 +167,29 @@ def _trim_trace_dir() -> None:
         excess = len(files) - MAX_TRACES
         # 注意: excess 为负时不能直接 files[:excess]（负索引切片会取前 N 个）——必须显式判正
         if excess > 0:
+            removed: list[str] = []
             for f in files[:excess]:
                 try:
                     f.unlink()
+                    removed.append(f.stem)
                 except OSError:
                     pass
+            if removed:
+                _log_trace_cleanup(removed)
+    except Exception:
+        pass
+
+
+def _log_trace_cleanup(trace_ids: list[str]) -> None:
+    """滚动清理审计：被删 trace 追加到 traces/cleanup_log.jsonl。"""
+    try:
+        entry = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "removed": trace_ids,
+            "reason": f"trim>MAX_TRACES({MAX_TRACES})",
+        }
+        with (_TRACE_DIR / "cleanup_log.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
 

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -49,10 +51,19 @@ def load_state() -> dict[str, Any]:
         return {}
 
 
+# 进程内蒸馏游标写锁：后台 auto_evolve 线程与 API 线程并发蒸馏时，
+# load→+1→save 的 read-modify-write 需要互斥（否则计数/游标被覆盖回退）
+_STATE_LOCK = threading.Lock()
+
+
 def save_state(state: dict[str, Any]) -> None:
+    """原子写（temp + os.replace）+ 进程内锁，防并发覆盖与半写文件。"""
     _ensure_state_dir()
-    _STATE_PATH.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _STATE_LOCK:
+        tmp = _STATE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, _STATE_PATH)
 
 
 # ---------------------------------------------------------------------------

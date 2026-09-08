@@ -174,3 +174,59 @@ def test_missing_stage_defaults_to_sequential(mock_llm, isolated_data):
     assert len(r["task_results"]) == 2
     assert r["task_results"][0]["agent"] == "memory"
     assert r["task_results"][1]["agent"] == "reflect"
+
+
+def test_planner_retries_once_then_fallback_with_clarification(
+        mock_llm, isolated_data, monkeypatch):
+    """planner 持续解析失败 → 重试一次（共 2 次调用）→ 兜底 chatbot + 请用户澄清。"""
+    from app.agent.graphs import orchestrator as orch
+    from langchain_core.messages import AIMessage
+
+    class BadModel:
+        calls = 0
+
+        def invoke(self, prompt):
+            BadModel.calls += 1
+            return AIMessage(content="this is not json")
+
+    monkeypatch.setattr(orch, "get_chat_model", lambda *a, **k: BadModel())
+    r = run_orchestrator("随便聊聊", thread_id="mt_retry_fallback")
+    assert r["success"]
+    assert BadModel.calls == 2                       # 恰好重试一次，不无限重试
+    assert r["route"] == "chatbot"
+    assert "澄清" in r["tasks"][0]["instruction"]    # 兜底任务带澄清提示
+    assert "retried" in r["route_reason"]
+
+
+def test_planner_invalid_label_retries_then_recovers(
+        mock_llm, isolated_data, monkeypatch):
+    """非法 agent 标签视为解析失败：第 1 次坏输出 → 重试第 2 次恢复正常路由。"""
+    from app.agent.graphs import orchestrator as orch
+    from langchain_core.messages import AIMessage
+
+    class FlakyModel:
+        calls = 0
+
+        def invoke(self, prompt):
+            FlakyModel.calls += 1
+            if FlakyModel.calls == 1:
+                return AIMessage(content='{"route": "no_such_agent"}')
+            return AIMessage(content='{"route": "plan", "reason": "recovered"}')
+
+    monkeypatch.setattr(orch, "get_chat_model", lambda *a, **k: FlakyModel())
+    r = run_orchestrator("帮我做今日计划", thread_id="mt_retry_recover")
+    assert FlakyModel.calls == 2
+    assert r["route"] == "plan"
+    assert r["success"]
+
+
+def test_planner_partial_invalid_label_keeps_valid_tasks(mock_llm, isolated_data):
+    """部分任务标签非法仍放行（不触发重试）：非法项 coercion 为 chatbot。"""
+    mock_llm.tasks = [
+        {"agent": "memory", "instruction": "记住：我的目标是拿到AI offer"},
+        {"agent": "junk-agent", "instruction": "其他"},
+    ]
+    r = run_orchestrator("记住并处理", thread_id="mt_partial_invalid")
+    assert r["success"]
+    assert r["tasks"][0]["agent"] == "memory"
+    assert r["tasks"][1]["agent"] == "chatbot"

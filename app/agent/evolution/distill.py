@@ -10,11 +10,13 @@ reflect 的批量模式：
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from app.agent.graphs.llm import get_chat_model
+from app.agent.graphs.structured import invoke_structured
 from app.core.logging import logger
 
 from . import experience as exp
@@ -22,6 +24,13 @@ from . import meta
 
 # 遗留兜底：meta 层不可用时的蒸馏 prompt（正式 prompt 资产在 meta.load_distill_prompt）
 DISTILL_PROMPT = meta.DISTILL_PROMPT_V1_ASSET
+
+
+class _DistillExtraction(BaseModel):
+    """蒸馏 LLM 输出 schema — 内层多态结构保持宽松 dict，下游逻辑不变。"""
+    experiences: list[dict] = Field(default_factory=list)
+    policy_suggestions: list[dict] = Field(default_factory=list)
+    tool_requests: list[dict] = Field(default_factory=list)
 
 
 def _compact_trace(t: dict[str, Any]) -> str:
@@ -33,13 +42,6 @@ def _compact_trace(t: dict[str, Any]) -> str:
     if fc:
         line += f" | failure_codes={','.join(str(c) for c in fc[:4])}"
     return line
-
-
-def _parse_llm_json(text: str) -> dict:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned).rstrip("` \n")
-    return json.loads(cleaned)
 
 
 def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
@@ -72,9 +74,8 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
 
     try:
         model = get_chat_model(temperature=0.3)
-        response = model.invoke(prompt)
-        text = response.content if hasattr(response, "content") else str(response)
-        data = _parse_llm_json(text)
+        parsed, _raw = invoke_structured(model, _DistillExtraction, prompt, retries=1)
+        data = parsed.model_dump()
     except Exception as exc:
         logger.error("evolve.distill.llm_failed", error=str(exc)[:200])
         meta.record_distill_outcome(prompt_version, ok=False)
@@ -145,14 +146,28 @@ def distill_once(force: bool = False, dry_run: bool = False) -> dict[str, Any]:
 
 def _apply_experiences(experiences: list[dict], batch_id: str = "",
                        trace_ids: list[str] | None = None) -> dict[str, Any]:
-    """经验落库：episodic + lessons.md/decisions.md + MEMORY.md 索引（带溯源行）。"""
+    """经验落库：episodic + lessons.md/decisions.md + MEMORY.md 索引（带溯源行）。
+
+    provenance 只引用当前真实存在的 trace：滚动清理可能已删除部分来源，
+    引用已消失的 id 会让教训变成不可证伪的"记忆"。
+    """
     from ..agent_data_service import add_episodic
     from ..topic_memory import upsert_index_entry, write_topic
 
     provenance = ""
     if batch_id:
-        refs = ",".join(t for t in (trace_ids or [])[:3])
-        provenance = f"\n<!-- provenance: batch={batch_id}; traces={refs} -->"
+        refs: list[str] = []
+        missing: list[str] = []
+        for tid in (trace_ids or [])[:3]:
+            try:
+                exists = (exp._TRACES_DIR / f"{tid}.json").exists()
+            except Exception:
+                exists = False
+            (refs if exists else missing).append(tid)
+        if missing:
+            logger.warning("evolve.distill.provenance_traces_missing",
+                           missing=missing, hint="sources already pruned; provenance trimmed")
+        provenance = f"\n<!-- provenance: batch={batch_id}; traces={','.join(refs)} -->"
 
     stats = {"episodic": 0, "lessons": 0, "decisions": 0}
     for ex in experiences:

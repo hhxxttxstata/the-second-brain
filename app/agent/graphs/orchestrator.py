@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -38,8 +39,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from app.core.config import settings
 from app.core.logging import logger
 
 from ..trace import TraceRecord, get_trace_stats
@@ -47,6 +50,7 @@ from .llm import get_chat_model
 from .plan_graph import run_plan_graph
 from .reflect_graph import run_reflect
 from .memory_graph import run_memory_agent
+from .structured import invoke_structured
 
 # 并行执行上限（与 _MAX_TASKS 一致）
 _MAX_PARALLEL = 4
@@ -170,8 +174,83 @@ _VALID_AGENTS = ("chatbot", "plan", "reflect", "memory")
 _MAX_TASKS = 4
 
 
+class _PlannerTask(BaseModel):
+    agent: str = "chatbot"
+    instruction: str = ""
+    stage: int = 0  # 0 = LLM 未提供 → _parse_tasks 按数组顺序归一（保守全串行）
+
+
+class PlannerPlan(BaseModel):
+    """planner 结构化输出 schema（with_structured_output JSON mode）。
+
+    agent 用 str 而非 Literal：非法标签的"部分放行/全非法重试"语义由
+    _planner_labels_valid + _parse_tasks 的 coercion 保留，schema 只保证结构。
+    route 为旧单路由格式兼容字段（_planner_labels_valid 会用它兜底判定）。
+    """
+    tasks: list[_PlannerTask] = Field(default_factory=list)
+    route: str = ""
+    reason: str = ""
+
+
+# ---------------------------------------------------------------------------
+# 规则短路（cascade 第一层）— 明确意图跳过 planner LLM
+# ---------------------------------------------------------------------------
+
+_GREETING_RE = re.compile(
+    r"^\s*(你好|您好|嗨|哈喽|hello|hi|hey|在吗|早上好|下午好|晚上好)[!！?？。~～\s]*$",
+    re.IGNORECASE,
+)
+_THANKS_RE = re.compile(
+    r"^\s*(谢谢|多谢|感谢|thanks|thank you)[你您]*[!！。~～\s]*$", re.IGNORECASE)
+_IDENTITY_RE = re.compile(
+    r"^\s*(你是谁|你叫什么名字?|你是什么|who are you)\s*[?？!！。]*$", re.IGNORECASE)
+# 多意图连接词 / 疑问特征：出现则不做短路，交给 planner 分解
+# （"并X"视为连接意图，lookbehind 排除"合并/一并"；出现即不短路，宁可多走一次 LLM）
+_MULTI_INTENT_RE = re.compile(r"然后|再帮我|另外|并且|顺便|还有[，,、]|(?<![合一])并")
+# 其他子 agent 特征词：memory 短路前排除复合意图（计划/反思/搜索等 → 交给 planner）
+_OTHER_AGENT_HINTS = (
+    "计划", "待办", "任务", "todo", "反思", "分析", "总结", "搜索", "搜一下",
+    "帮我查", "查一下", "推荐", "reflect", "plan", "search", "analyze",
+)
+_MEMORY_CMD_HINTS = (
+    "存入记忆", "写入记忆", "存进记忆", "记住", "记一下", "记下来",
+    "帮我记", "请你记", "别忘了", "别忘", "保存这个",
+    "save this", "remember", "write memory",
+)
+
+
+def _shortcut_route(input_text: str) -> list[dict] | None:
+    """cascade 第一层：规则可高置信判定的意图直接产出任务，省掉 planner LLM。
+
+    只覆盖两类与 planner LLM 判定结果一致的场景（golden 期望路由不受影响）：
+      - 纯问候 / 感谢 / 身份询问 → chatbot
+      - 显式记忆指令（且无多意图连接词、非疑问句、文本较短）→ memory
+    返回 None 表示无法短路，走 planner LLM。settings.planner_shortcut 可关闭。
+    """
+    if not settings.planner_shortcut:
+        return None
+    text = (input_text or "").strip()
+    if not text or len(text) > 120:
+        return None
+    if (_GREETING_RE.match(text) or _THANKS_RE.match(text)
+            or _IDENTITY_RE.match(text)):
+        return [{"agent": "chatbot", "instruction": text, "stage": 1}]
+    text_lower = text.lower()
+    if (_MULTI_INTENT_RE.search(text)
+            or text.endswith(("?", "？", "吗"))
+            or any(h in text_lower for h in _OTHER_AGENT_HINTS)):
+        return None
+    if any(h in text_lower for h in _MEMORY_CMD_HINTS):
+        return [{"agent": "memory", "instruction": text, "stage": 1}]
+    return None
+
+
 def planner_node(state: OrchestratorState) -> OrchestratorState:
-    """LLM 分析意图，产出有序子任务列表（单意图 → 恰好 1 个任务，等价旧路由）。"""
+    """LLM 分析意图，产出有序子任务列表（单意图 → 恰好 1 个任务，等价旧路由）。
+
+    cascade：规则短路命中 → 零 LLM 开销；未命中 → planner 小模型
+    （settings.planner_model）判意图，回答仍由当前全局模型生成。
+    """
     # conversation 可能是 list[str]（旧格式）或 list[dict]（新格式）
     raw_conv = state.get("conversation", []) or []
     if raw_conv and isinstance(raw_conv[0], dict):
@@ -184,25 +263,41 @@ def planner_node(state: OrchestratorState) -> OrchestratorState:
 
     input_text = state.get("input_text", "")
     logger.info("orchestrator.planner", msg="分析用户意图，规划子任务...")
-    prompt = PLANNER_PROMPT.format(
-        input=input_text,
-        conversation=conv_text,
-    )
-    model = get_chat_model(temperature=0.2)
-    try:
-        response = model.invoke(prompt)
-        _accumulate_usage(state, response)
-        text = response.content if hasattr(response, "content") else str(response)
-        if text.startswith("```"):
-            import re
-            text = re.sub(r"^```(?:json)?\s*", "", text).rstrip("` \n")
-        data = json.loads(text)
-        state["tasks"] = _parse_tasks(data, input_text)
-        state["route_reason"] = data.get("reason", "")
-    except Exception:
-        state["tasks"] = [{"agent": "chatbot", "instruction": input_text}]
-        state["route_reason"] = "fallback: parse error"
-        logger.warning("orchestrator.planner_fallback", error="parse error")
+
+    shortcut = _shortcut_route(input_text)
+    if shortcut:
+        state["tasks"] = _parse_tasks({"tasks": shortcut}, input_text)
+        state["route_reason"] = "shortcut: rule-based cascade (planner LLM skipped)"
+        logger.info("orchestrator.planner_shortcut",
+                    step=f"⚡ 规则短路命中 → {state['tasks'][0]['agent']}（跳过 planner LLM）")
+    else:
+        prompt = PLANNER_PROMPT.format(
+            input=input_text,
+            conversation=conv_text,
+        )
+        # 小模型判意图（空配置则跟随全局模型）；回答模型在子任务中另行选择
+        model = get_chat_model(model=settings.planner_model or None, temperature=0.2)
+        last_error = ""
+        try:
+            parsed, raw = invoke_structured(
+                model, PlannerPlan, prompt, retries=1,
+                validator=lambda p: _planner_labels_valid(p.model_dump()))
+            _accumulate_usage(state, raw)
+            data = parsed.model_dump()
+            state["tasks"] = _parse_tasks(data, input_text)
+            state["route_reason"] = data.get("reason", "")
+        except Exception as exc:
+            last_error = str(exc) or type(exc).__name__
+        if last_error:
+            # 兜底：路由默认 chatbot 并请用户澄清，保证永不卡死
+            state["tasks"] = [{
+                "agent": "chatbot",
+                "instruction": (f"{input_text}\n\n"
+                                "（系统提示：意图解析失败，请直接回应用户，"
+                                "并礼貌地请用户换一种说法澄清需求）"),
+            }]
+            state["route_reason"] = "fallback: planner parse error (retried once)"
+            logger.warning("orchestrator.planner_fallback", error=last_error)
 
     # 主路由 = 第一个任务（兼容 grader "路由到 X" 判定）
     tasks = state.get("tasks") or [{"agent": "chatbot", "instruction": input_text}]
@@ -214,6 +309,20 @@ def planner_node(state: OrchestratorState) -> OrchestratorState:
                 task_count=len(tasks),
                 reason=state["route_reason"])
     return state
+
+
+def _planner_labels_valid(data: Any) -> bool:
+    """planner 输出标签合法性：旧格式 route 必须合法，新格式至少一个任务 agent 合法。
+
+    JSON 解析成功但标签全部非法 → 视为解析失败（触发重试），
+    而不是被 _parse_tasks 静默强转成 chatbot。部分非法仍放行（coercion 兜底）。
+    """
+    if not isinstance(data, dict):
+        return False
+    tasks = data.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        return any(isinstance(t, dict) and t.get("agent") in _VALID_AGENTS for t in tasks)
+    return data.get("route") in _VALID_AGENTS
 
 
 def _parse_tasks(data: dict, input_text: str) -> list[dict]:
@@ -289,7 +398,7 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
     set_current_trace(trace)
 
     def _step(event: str, msg: str, **extra) -> None:
-        """同时写终端日志与 trace.step_log（环节序列, 供事后定位）。"""
+        """同时写终端日志、trace.step_log 与流式事件（环节序列, 供事后/实时定位）。"""
         logger.info(event, step=msg, **extra)
         detail = ""
         if extra:
@@ -298,6 +407,13 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
             except Exception:
                 detail = str(extra)[:300]
         trace.add_step(msg, detail)
+        try:
+            from langgraph.config import get_stream_writer
+            writer = get_stream_writer()
+            if writer is not None:
+                writer({"type": "step", "event": event, "text": msg})
+        except Exception:
+            pass
 
     task_results: list[dict] = [None] * len(tasks)  # 保序：按 index 填充
     reported: set[int] = set()
@@ -394,7 +510,10 @@ def execute_agent(state: OrchestratorState) -> OrchestratorState:
         try:
             tk = state.get("_llm_tokens") or {}
             if tk.get("prompt") or tk.get("completion"):
-                trace.set_llm_stats("deepseek-chat",
+                from ..model_switch import get_current_model_config
+                model_name = (str(get_current_model_config().get("model") or "")
+                              or settings.llm_model)
+                trace.set_llm_stats(model_name,
                                     prompt_tokens=tk.get("prompt", 0),
                                     completion_tokens=tk.get("completion", 0))
         except Exception:
@@ -562,8 +681,16 @@ def _run_chat_task(state, trace, _step, text: str, user_id: str) -> dict:
     """chatbot 子任务。"""
     _step("chatbot.run", f"💬 构建上下文并回答: {text[:60]}...")
     from .chatbot_graph import build_chatbot_graph
+    from .structured import STREAM_WRITER_BRIDGE
     from langchain_core.messages import HumanMessage, AIMessage
     from ..agent_data_service import build_context
+
+    # 流式桥：子图 invoke 重建 langgraph context，外层 writer 需手动带入（同线程）
+    try:
+        from langgraph.config import get_stream_writer
+        STREAM_WRITER_BRIDGE.writer = get_stream_writer()
+    except Exception:
+        STREAM_WRITER_BRIDGE.writer = None
 
     # 先构建上下文并记录到 trace
     ctx = build_context(task=text, session_id=state.get("run_id", ""))
@@ -681,21 +808,9 @@ def build_orchestrator():
     return _graph
 
 
-def run_orchestrator(input_text: str,
-                     user_id: str = "default_user",
-                     conversation: list | None = None,
-                     thread_id: str | None = None) -> dict[str, Any]:
-    """运行编排器，自动路由到正确的 Agent。
-
-    Args:
-        thread_id: 对话线程 ID。同一 thread_id 的多轮调用共享对话历史。
-    """
-    start = time.monotonic()
-    logger.info("orchestrator.start", step="🚀 Orchestrator 启动", text=input_text[:80])
-
-    graph = build_orchestrator()
-    run_id = thread_id or f"orch_{uuid.uuid4().hex[:10]}"
-    initial = {
+def _orchestrator_initial(input_text: str, user_id: str,
+                          conversation: list | None, run_id: str) -> dict:
+    return {
         "user_id": user_id,
         "input_text": input_text,
         "conversation": conversation or [],
@@ -713,6 +828,107 @@ def run_orchestrator(input_text: str,
         "step_log": [],
     }
 
+
+def _maybe_auto_evolve() -> None:
+    """自进化自动触发（节流 + 后台，不阻塞响应）。"""
+    try:
+        from ..evolution.runner import maybe_auto_evolve
+        evo = maybe_auto_evolve()
+        if evo.get("triggered"):
+            logger.info("orchestrator.evolve",
+                        step="🧬 自进化已触发（后台蒸馏+策略更新）",
+                        undistilled=evo.get("undistilled"))
+    except Exception:
+        pass
+
+
+async def stream_orchestrator(input_text: str,
+                              user_id: str = "default_user",
+                              conversation: list | None = None,
+                              thread_id: str | None = None):
+    """流式版编排器：yield 增量事件 dict，供 SSE 端点推送。
+
+    事件序列：
+      planner_done {route, tasks, reason}   — 意图规划完成
+      step {event, text}                     — 执行环节（来自 _step）
+      token {text}                           — chatbot 回答增量（来自 call_model_node）
+      final {...}                            — 与 run_orchestrator 返回结构一致
+
+    trace 记录与 auto_evolve 与非流式路径完全一致（execute 节点内照常执行）。
+    """
+    start = time.monotonic()
+    logger.info("orchestrator.start", step="🚀 Orchestrator 启动（stream）", text=input_text[:80])
+
+    graph = build_orchestrator()
+    run_id = thread_id or f"orch_{uuid.uuid4().hex[:10]}"
+    initial = _orchestrator_initial(input_text, user_id, conversation, run_id)
+
+    final_state: dict = {}
+    try:
+        # 同步节点在 executor 线程执行；custom 通道承载 _step/token 事件
+        async for mode, chunk in graph.astream(initial, stream_mode=["updates", "custom"]):
+            if mode == "custom":
+                if isinstance(chunk, dict) and chunk.get("type"):
+                    yield chunk
+                continue
+            for node, delta in (chunk or {}).items():
+                final_state.update(delta or {})
+                if node == "planner":
+                    yield {
+                        "type": "planner_done",
+                        "route": final_state.get("route", ""),
+                        "tasks": final_state.get("tasks", []),
+                        "reason": final_state.get("route_reason", ""),
+                    }
+        latency = int((time.monotonic() - start) * 1000)
+        _maybe_auto_evolve()
+        logger.info("orchestrator.done",
+                    step=f"✅ 执行完毕 (route={final_state.get('route', '?')})",
+                    latency=f"{latency}ms",
+                    success=final_state.get("success", False))
+        yield {
+            "type": "final",
+            "success": final_state.get("success", False),
+            "route": final_state.get("route", "?"),
+            "route_reason": final_state.get("route_reason", ""),
+            "result": final_state.get("result", ""),
+            "result_data": final_state.get("result_data", {}),
+            "tasks": final_state.get("tasks", []),
+            "task_results": final_state.get("task_results", []),
+            "latency_ms": latency,
+            "run_id": final_state.get("run_id", run_id),
+            "trace_id": final_state.get("trace_id", ""),
+        }
+    except Exception as exc:
+        logger.error("orchestrator.failed", step="❌ Orchestrator 执行失败", error=str(exc))
+        yield {
+            "type": "final",
+            "success": False,
+            "error": str(exc),
+            "route": "error",
+            "result": str(exc),
+            "latency_ms": int((time.monotonic() - start) * 1000),
+            "run_id": run_id,
+            "trace_id": "",
+        }
+
+
+def run_orchestrator(input_text: str,
+                     user_id: str = "default_user",
+                     conversation: list | None = None,
+                     thread_id: str | None = None) -> dict[str, Any]:
+    """运行编排器，自动路由到正确的 Agent。
+
+    Args:
+        thread_id: 对话线程 ID。同一 thread_id 的多轮调用共享对话历史。
+    """
+    start = time.monotonic()
+    logger.info("orchestrator.start", step="🚀 Orchestrator 启动", text=input_text[:80])
+
+    graph = build_orchestrator()
+    run_id = thread_id or f"orch_{uuid.uuid4().hex[:10]}"
+    initial = _orchestrator_initial(input_text, user_id, conversation, run_id)
+
     try:
         # orchestrator 图无 checkpointer (每次全量 initial state), 无需 config
         result = graph.invoke(initial)
@@ -726,15 +942,7 @@ def run_orchestrator(input_text: str,
                     success=success)
 
         # ── 自进化自动触发（节流 + 后台，不阻塞响应） ──
-        try:
-            from ..evolution.runner import maybe_auto_evolve
-            evo = maybe_auto_evolve()
-            if evo.get("triggered"):
-                logger.info("orchestrator.evolve",
-                            step="🧬 自进化已触发（后台蒸馏+策略更新）",
-                            undistilled=evo.get("undistilled"))
-        except Exception:
-            pass
+        _maybe_auto_evolve()
 
         return {
             "success": result.get("success", False),

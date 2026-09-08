@@ -159,6 +159,72 @@ export interface RawFeedbackResponse {
   candidate_id: string | null;
 }
 
+/** /chat/stream SSE 事件帧（final 帧字段与 RawChatResponse 一致） */
+export interface ChatStreamEvent {
+  type: "planner_done" | "step" | "token" | "final";
+  text?: string;
+  event?: string;
+  route?: string;
+  reason?: string;
+  tasks?: { agent: string; instruction: string; stage?: number }[];
+}
+
+async function chatStream(
+  text: string,
+  conversation: string[],
+  eventId: string | undefined,
+  onEvent: (ev: ChatStreamEvent) => void,
+  timeoutMs = 180_000,
+): Promise<RawChatResponse | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${BASE}/agent/v2/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text,
+        user_id: "default_user",
+        event_id: eventId,
+        conversation: conversation.slice(-10),
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new ApiError(`POST /agent/v2/chat/stream → ${res.status}`, res.status);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let final: RawChatResponse | null = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const ev = JSON.parse(payload) as ChatStreamEvent;
+            if (ev.type === "final") final = ev as unknown as RawChatResponse;
+            onEvent(ev);
+          } catch {
+            /* 坏帧跳过，不中断流 */
+          }
+        }
+      }
+    }
+    return final;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export const api = {
   workspaceSummary: (timeoutMs = 30_000) =>
     fetchJson<RawSummary>("/workspace/summary", undefined, timeoutMs),
@@ -188,6 +254,9 @@ export const api = {
       },
       timeoutMs,
     ),
+
+  /** 流式对话（SSE）：onEvent 逐帧回调；返回 final 帧（连接中断且无 final 时为 null） */
+  chatStream,
 
   traces: (limit = 30) =>
     fetchJson<{ traces: RawTrace[]; stats: Record<string, unknown> }>(

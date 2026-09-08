@@ -1,10 +1,17 @@
-// Workspace Shell — 三栏总装 + 数据加载 + chat 发送流程（交接文档 §22 无流式策略：
-// 发送即建 run placeholder → 请求返回后按 trace_id 拉全量轨迹刷新 AgentRun）
+// Workspace Shell — 三栏总装 + 数据加载 + chat 发送流程（2026-09 流式改造：
+// 优先走 /chat/stream SSE —— planner/step 实时可见、token 增量渲染；
+// SSE 不可用时自动降级一次性 /chat。完成后仍按 trace_id 补拉全量轨迹）
 // 会话持久化：活跃会话的 messages/runs 是权威源，每次变化写穿 localStorage
 // （session-store），刷新后由 bootstrap() 惰性恢复；历史会话仅显式归档才从
 // 主列表移除，归档可恢复。
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type RawSummary, type RawTool } from "@/lib/workspace/api";
+import {
+  api,
+  type RawChatResponse,
+  type RawSummary,
+  type RawTool,
+  type RawTrace,
+} from "@/lib/workspace/api";
 import {
   chatResponseToRun,
   placeholderRun,
@@ -297,19 +304,14 @@ export function WorkspaceShell() {
       setCurrentRunId(run.id);
       setSending(true);
 
-      try {
-        // event_id = 会话窗口唯一ID：后端按它累积 checkpoint 历史；
-        // conversation 回传仅在空线程（首次/老会话迁移）时作为种子被采用
-        const resp = await api.chat(
-          text,
-          conversationFromMessages(messages).map(
-            (c) => `${c.role === "user" ? "User" : "Assistant"}: ${c.content}`,
-          ),
-          activeId ?? undefined,
-        );
+      const conversation = conversationFromMessages(messages).map(
+        (c) => `${c.role === "user" ? "User" : "Assistant"}: ${c.content}`,
+      );
+      const eventId = activeId ?? undefined;
 
-        // 完成后按 trace_id 补拉完整执行轨迹（tool calls / memory deltas / failure codes）
-        let trace = null;
+      // 流式/一次性共用收尾：落地 final run + 完整回复（按需补拉 trace）
+      const finishWithResponse = async (resp: RawChatResponse) => {
+        let trace: RawTrace | null = null;
         if (resp.trace_id) {
           try {
             trace = await api.runTrace(resp.trace_id);
@@ -331,7 +333,9 @@ export function WorkspaceShell() {
               : x,
           ),
         );
-      } catch (e) {
+      };
+
+      const markRunFailed = (e: unknown) => {
         const failed: AgentRun = {
           ...run,
           status: "failed",
@@ -349,6 +353,78 @@ export function WorkspaceShell() {
               : x,
           ),
         );
+      };
+
+      try {
+        // 流式优先：planner_done/step 实时刷新 Inspector，token 增量渲染回复
+        const final = await api.chatStream(text, conversation, eventId, (ev) => {
+          if (ev.type === "token" && ev.text) {
+            const delta = ev.text;
+            setMessages((m) =>
+              m.map((x) =>
+                x.id === assistantMsg.id ? { ...x, content: x.content + delta } : x,
+              ),
+            );
+          } else if (ev.type === "planner_done") {
+            setRuns((r) =>
+              r.map((x) =>
+                x.id === run.id
+                  ? {
+                      ...x,
+                      route: ev.route || x.route,
+                      routeReason: ev.reason || x.routeReason,
+                      steps: x.steps.map((s) =>
+                        s.kind === "supervisor"
+                          ? {
+                              ...s,
+                              status: "success" as const,
+                              action: `route → ${ev.route ?? "chatbot"}`,
+                            }
+                          : s.id === `${x.id}-agents`
+                            ? {
+                                ...s,
+                                status: "running" as const,
+                                action: ev.tasks?.length
+                                  ? `${ev.tasks.length} sub-task(s)`
+                                  : s.action,
+                              }
+                            : s,
+                      ),
+                    }
+                  : x,
+              ),
+            );
+          } else if (ev.type === "step" && ev.text) {
+            const stepText = ev.text;
+            setRuns((r) =>
+              r.map((x) =>
+                x.id === run.id
+                  ? {
+                      ...x,
+                      steps: x.steps.map((s) =>
+                        s.id === `${x.id}-agents` ? { ...s, action: stepText } : s,
+                      ),
+                    }
+                  : x,
+              ),
+            );
+          }
+        });
+        if (final) {
+          await finishWithResponse(final);
+          return;
+        }
+        // 流结束但没有 final 帧（异常中断）→ 视为失败走降级
+        throw new Error("stream ended without final event");
+      } catch (streamErr) {
+        try {
+          // 降级：一次性 /chat（旧路径，行为不变）
+          const resp = await api.chat(text, conversation, eventId);
+          await finishWithResponse(resp);
+        } catch (e) {
+          markRunFailed(e instanceof Error ? e : new Error(String(streamErr)));
+          // 流式与降级都失败时，展示根因（优先降级请求的错误）
+        }
       } finally {
         setSending(false);
         // 非阻塞刷新工作台快照（今日计数 / 记忆 / 评测）

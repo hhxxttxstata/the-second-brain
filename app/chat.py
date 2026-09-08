@@ -105,8 +105,6 @@ def main():
 
         if text.lower() in ("help", "h", "/?"):
             print("""
-  plan         生成今日计划
-  status       系统状态
   model        切换 LLM 模型（model 2 / model reasoner / model list）
   help         显示帮助
   quit         退出
