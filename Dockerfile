@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 依赖安装之后追加
+RUN pip install --no-cache-dir aliyun-bootstrap && aliyun-bootstrap -a install
+
 # 复制代码 + eval 评测集 + 前端产物
 COPY app/ ./app/
 COPY agent_data/eval/ ./agent_data/eval/
@@ -34,4 +37,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 EXPOSE 8000
 
 # Workspace UI: http://localhost:8000/workspace/   API docs: http://localhost:8000/docs
-CMD ["python", "-X utf8", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# CMD ["python", "-X utf8", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 原 CMD 换成由 aliyun-instrument 拉起
+CMD ["aliyun-instrument", "python", "-X", "utf8", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

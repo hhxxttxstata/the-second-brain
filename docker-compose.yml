@@ -19,6 +19,8 @@ services:
       OBSIDIAN_VAULT: ${OBSIDIAN_VAULT:-D:/MYWORLD}
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: "1"
+      # 本地/非阿里云机器必须强制公网上报，否则探针默认走内网域名（-intranet）必然 502
+      PROFILER_NETWORK_STRATEGY: public
     volumes:
       # SQLite WAL 无法在 Windows bind mount 上运行（disk I/O error）→ 用命名卷。
       # 首次部署用本地 agent_data 播种（见 docs），容器与本地数据以此卷为准。
